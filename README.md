@@ -3,14 +3,18 @@
 Dumper is a Frida script to dump L3 CDMs from rooted Android devices.
 
 ## ** IMPORTANT **
-The `--cdm-version` flag selects the argument layout used by the hooked Widevine library. It is independent of Android and Frida version numbers. The current script uses `args[4]` for CDM 14.0.0, 15.0.0, and 16.0.0, and `args[5]` for CDM 16.1.0 and 17.0.0. The selected value must match the actual library; when omitted, it defaults to CDM 14.0.0 (`args[4]`).
+The `--cdm-version` flag controls the `PrepareKeyRequest` argument layout and is independent of Android and Frida version numbers. It defaults to `auto`: the Frida script checks the exported C++ signature before attaching hooks and selects a known layout. This identifies the argument layout, not an exact CDM or plugin version.
+
+Automatic detection currently recognizes the `args[5]` signature from the saved, working Android 13 `libwvaidl.so`. It has been checked offline; live automatic detection still needs verification. An unknown, missing, or ambiguous signature prevents hooking that library and reports an error. Other matching libraries are still tried; startup exits if none can be hooked.
+
+Manual labels `14.0.0`, `15.0.0`, and `16.0.0` select `args[4]`; `16.1.0` and `17.0.0` select `args[5]`. Keep using a known working manual setting for older libraries until their signatures have been verified for automatic detection.
 
 ## Prerequisites
 - Rooted Android device
 - [Installed Frida server on the Android device](https://frida.re/docs/android/)
 - Installed [platform-tools ADB/Fastboot](https://developer.android.com/studio/releases/platform-tools) on the PC
 - Installed [Python 3](https://www.python.org/downloads/) on the PC
-- `CDM_VERSION` retrieved from the [DRM Info app](https://play.google.com/store/apps/details?id=com.androidfung.drminfo).
+- A known `PrepareKeyRequest` layout, if automatic detection cannot verify the library signature.
 
 ## Requirements:
 Create and activate a virtual environment, then install the dependencies:
@@ -32,12 +36,17 @@ The `frida`, `frida-tools`, and `pycryptodome` requirements are unpinned, so `--
 
 At startup, the dumper automatically selects a USB Frida device whose system metadata reports Android; iPhones and other devices are ignored. If more than one Android device is connected, run `frida-ls-devices` to find their IDs and select one explicitly, for example (with `.venv` activated):
 ```
-python3 dump_keys.py --device-id emulator-5554 --cdm-version 17.0.0
+python3 dump_keys.py --device-id emulator-5554
 ```
 
 Run the local regression tests with `.venv/bin/python -m unittest discover -s tests -v`. See [tests.md](tests.md) for setup, focused checks, and coverage.
 
-By default, the script scans exported candidate functions whose names contain only lowercase letters in the Widevine `libwvhidl.so` and `libwvaidl.so` modules, effectively brute-forcing the private-key function name.
+The primary command uses automatic layout detection and scans exported candidate functions whose names contain only lowercase letters in the Widevine `libwvhidl.so` and `libwvaidl.so` modules:
+```
+python3 dump_keys.py
+```
+
+If a library signature is unknown, automatic detection refuses to hook that library. If no supported library remains, startup exits with an error. After investigating a specific library, you can provide a known manual layout override, for example:
 ```
 python3 dump_keys.py --cdm-version 17.0.0
 ```
@@ -57,7 +66,7 @@ python3 dump_keys.py --cdm-version 17.0.0 --module-name 'libwvhidl.so' 'libwvaid
 ## Options:
 ```
     -h, --help                      Print this help text and exit.
-    --cdm-version                   The CDM version of the device e.g. '17.0.0'.
+    --cdm-version                   PrepareKeyRequest layout: auto (default) or a known manual label.
     --device-id                     The Frida USB device ID (see frida-ls-devices).
     --function-name                 The name of the function to hook to retrieve the private key.
     --module-name                   The name of the widevine `.so` modules.
@@ -73,11 +82,11 @@ The `client_id.bin` and `private_key.pem` pair is written only after a matching 
 
 ## Recommended setup
 
-A rooted Pixel device or Pixel emulator profile running Android 13 or earlier is recommended. The confirmed setup for this fork is a Pixel 6 Pro running Android 13. Android 14 and later have not been verified here.
+A rooted Pixel device or Pixel emulator profile running Android 13 or earlier is recommended. Dumping with the manual `17.0.0` setting worked on the reported Pixel 6 Pro Android 13 setup. Automatic detection has been checked offline against its saved library. Older layouts remain available as explicit manual overrides until their signatures are verified. Android 14 and later have not been verified here.
 
-The original project reported these working combinations. Use them as a starting point; the Widevine library build determines the required setting, and a successful dump does not independently establish its exact version.
+These historical combinations are manual starting points only; they do not drive automatic detection or establish an exact CDM version:
 
-| Android version | Reported CDM setting |
+| Historical Android release | Manual label |
 | --- | --- |
 | Android 9 | `14.0.0` |
 | Android 10 | `15.0.0` |

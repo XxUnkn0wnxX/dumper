@@ -7,6 +7,10 @@ from Helpers.wv_proto2_pb2 import SignedLicenseRequest
 from Helpers.DeviceSelection import select_android_device
 
 
+class HookError(RuntimeError):
+    """Raised when a Frida library hook cannot be installed."""
+
+
 class Device:
     def __init__(self, dynamic_function_name, cdm_version, module_names, device_id=None):
         self.logger = logging.getLogger(__name__)
@@ -87,9 +91,24 @@ class Device:
             return loaded_modules
 
     def hook_to_process(self, process, library):
-        session = self.usb_device.attach(process)
-        script = session.create_script(self.frida_script)
-        script.on('message', self.on_message)
-        script.load()
-        script.exports.hooklibfunctions(library)
-        return session
+        session = None
+        try:
+            session = self.usb_device.attach(process)
+            script = session.create_script(self.frida_script)
+            script.on('message', self.on_message)
+            script.load()
+            script.exports.hooklibfunctions(library)
+            return session
+        except Exception as error:
+            if session is not None:
+                try:
+                    session.detach()
+                except Exception as detach_error:
+                    self.logger.warning(
+                        'Failed to detach unsuccessful hook session for process %s: %s',
+                        process,
+                        detach_error,
+                    )
+            raise HookError(
+                f'Failed to hook library {library!r} in process {process!r}: {error}'
+            ) from error

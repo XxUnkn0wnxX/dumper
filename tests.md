@@ -35,6 +35,10 @@ The existing protobuf dependency and generated bindings may emit deprecation
 warnings on newer Python versions. Those warnings alone do not indicate a
 failed test; check the final test result.
 
+The Python suite includes the JavaScript detection wrapper. When Node.js is
+available it runs `tests/test_cdm_detection.js`; without Node.js that wrapper
+skips the JavaScript check.
+
 ## Run a focused check
 
 Run only the device-selection test file:
@@ -43,11 +47,23 @@ Run only the device-selection test file:
 .venv/bin/python -m unittest discover -s tests -p 'test_device_selection.py' -v
 ```
 
-Run the CLI regression that rejects an explicitly selected iPhone before any
+Run only the regression that rejects an explicitly selected iPhone before any
 process scan or attachment:
 
 ```sh
 .venv/bin/python -m unittest discover -s tests -p 'test_device_selection.py' -k explicit_iphone -v
+```
+
+Run the CDM layout, hook lifecycle, and CLI regressions:
+
+```sh
+.venv/bin/python -m unittest discover -s tests -p 'test_cdm_cli.py' -v
+```
+
+Run the JavaScript harness directly when Node.js is installed:
+
+```sh
+node tests/test_cdm_detection.js
 ```
 
 ## Additional checks
@@ -74,9 +90,16 @@ The suite uses simulated Frida devices to check:
 - Selection of an explicit Android device and rejection of an explicit iPhone.
 - Errors when multiple Android devices are available or a requested ID is missing.
 - Delayed discovery, including Android appearing during another device's OS probe.
-- CLI argument forwarding and failure before process scanning or attachment.
+- CLI argument forwarding, automatic versus explicit layout selection, invalid choices,
+  clean hook failures, session cleanup, and no-hook failure handling.
+- Continuing with a working library when another library fails initialization.
+
+The JavaScript harness executes the actual hook script with simulated Frida APIs.
+It checks the verified signature, all manual labels, rejection of changed or
+ambiguous signatures before hooks are installed, exclusion of data exports, and
+request-hook attachment failures.
 
 No connected device, running Frida server, or ADB connection is required.
 The tests do not access real devices or produce key dumps. Live device discovery,
-key extraction, and compatibility with a new Widevine library still require
-separate verification on the target device.
+key extraction, automatic signature detection, and compatibility with a new
+Widevine library still require separate verification on the target device.

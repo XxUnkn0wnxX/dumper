@@ -1,5 +1,6 @@
 import sys
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 from Helpers import DeviceSelection
@@ -198,15 +199,20 @@ class CommandLineIntegrationTests(unittest.TestCase):
         fake_device = mock.Mock(name='device')
         fake_device.name = 'Pixel'
         fake_device.usb_device.id = 'android-1'
-        fake_device.usb_device.enumerate_processes.return_value = []
+        fake_device.usb_device.enumerate_processes.return_value = [
+            SimpleNamespace(name='drm_process')
+        ]
+        fake_device.find_widevine_process.return_value = ['libwvhidl.so']
+        fake_device.hook_to_process.return_value = mock.Mock()
 
         with mock.patch.object(sys, 'argv', ['dump_keys.py', '--device-id', 'android-1']), \
                 mock.patch('dump_keys.Device', return_value=fake_device) as device_class:
             import dump_keys
             dump_keys.main()
 
-        device_class.assert_called_once_with('', '14.0.0', ['libwvaidl.so', 'libwvhidl.so'], 'android-1')
+        device_class.assert_called_once_with('', 'auto', ['libwvaidl.so', 'libwvhidl.so'], 'android-1')
         fake_device.usb_device.enumerate_processes.assert_called_once_with()
+        fake_device.hook_to_process.assert_called_once_with('drm_process', 'libwvhidl.so')
 
     def test_selection_failure_exits_before_process_scan(self):
         with mock.patch.object(sys, 'argv', ['dump_keys.py']), \

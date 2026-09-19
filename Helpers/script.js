@@ -98,25 +98,56 @@ function disablePrivacyMode(address) {
     });
 }
 
-function prepareKeyRequest(address) {
+// Match complete observed signatures: a name fragment or Android version does
+// not identify the ABI. These labels describe the existing argument layouts,
+// not the exact plugin version installed on the device.
+const PREPARE_KEY_REQUEST_LAYOUTS = {
+    '_ZN5wvcdm10CdmLicense17PrepareKeyRequestERKNS_18InitializationDataERKNSt3__112basic_stringIcNS4_11char_traitsIcEENS4_9allocatorIcEEEENS_14CdmLicenseTypeERKNS4_3mapISA_SA_NS4_4lessISA_EENS8_INS4_4pairISB_SA_EEEEEEPSA_SN_': {
+        argumentIndex: 5,
+        versions: '16.1.0 / 17.0.0'
+    }
+};
+
+function selectPrepareKeyRequest(entries, libraryName) {
+    const candidates = entries.filter(entry =>
+        entry.type === 'function' && entry.name.includes('PrepareKeyRequest'));
+    if (candidates.length !== 1) {
+        throw new Error('Expected one exported PrepareKeyRequest function in ' + libraryName +
+            ', found ' + candidates.length + '. Check --module-name and library compatibility.');
+    }
+
+    const entry = candidates[0];
+    let layout;
+    if (CDM_VERSION === 'auto') {
+        if (!Object.prototype.hasOwnProperty.call(PREPARE_KEY_REQUEST_LAYOUTS, entry.name)) {
+            throw new Error('Cannot auto-detect the PrepareKeyRequest layout in ' + libraryName +
+                ': unrecognized signature ' + entry.name +
+                '. Supply --cdm-version only if you know the correct supported layout for this library.');
+        }
+        layout = PREPARE_KEY_REQUEST_LAYOUTS[entry.name];
+        send('message_info', new TextEncoder().encode(
+            'Auto-detected PrepareKeyRequest layout in ' + libraryName + ': args[' +
+            layout.argumentIndex + '] (CDM settings ' + layout.versions + ').'));
+    } else {
+        const manualLayouts = {
+            '14.0.0': 4, '15.0.0': 4, '16.0.0': 4,
+            '16.1.0': 5, '17.0.0': 5
+        };
+        if (!Object.prototype.hasOwnProperty.call(manualLayouts, CDM_VERSION)) {
+            throw new Error('Unsupported --cdm-version: ' + CDM_VERSION);
+        }
+        layout = { argumentIndex: manualLayouts[CDM_VERSION] };
+        send('message_info', new TextEncoder().encode(
+            'Using manual CDM setting ' + CDM_VERSION + ' in ' + libraryName +
+            ': PrepareKeyRequest args[' + layout.argumentIndex + '].'));
+    }
+    return { entry: entry, argumentIndex: layout.argumentIndex };
+}
+
+function prepareKeyRequest(address, argumentIndex) {
     Interceptor.attach(ptr(address), {
         onEnter: function (args) {
-            switch (CDM_VERSION) {
-                case '14.0.0':
-                case '15.0.0':
-                case '16.0.0':
-                    this.ret = args[4];
-                    break;
-                case '16.1.0':
-                case '17.0.0':
-                    this.ret = args[5];
-                    break;
-                default:
-                    const message = 'Defaulting to args[4] for PrepareKeyRequest.'
-                    send('message_info', new TextEncoder().encode(message));
-                    this.ret = args[4];
-                    break;
-            }
+            this.ret = args[argumentIndex];
         },
         onLeave: function () {
             if (this.ret) {
@@ -135,20 +166,28 @@ function hookLibFunctions(lib) {
     let hookedProvidedModule = false;
     let funcNames = [];
     let successfulHookCount = 0;
+    let requestHooked = false;
 
     send('message_info', new TextEncoder().encode(message));
 
     const mod = Process.getModuleByName(name);
     const entries = mod.enumerateExports();
+    // Resolve the layout before installing any hooks. Never probe argument
+    // pointers to guess the layout during playback.
+    const request = selectPrepareKeyRequest(entries, name);
 
     entries.forEach(function (module) {
+        if (module.type !== 'function') {
+            return;
+        }
         try {
             let hookedModule;
             if (module.name.includes('UsePrivacyMode')) {
                 disablePrivacyMode(module.address);
                 hookedModule = module.name;
-            } else if (module.name.includes('PrepareKeyRequest')) {
-                prepareKeyRequest(module.address);
+            } else if (module.name === request.entry.name) {
+                prepareKeyRequest(module.address, request.argumentIndex);
+                requestHooked = true;
                 hookedModule = module.name;
             } else if (DYNAMIC_FUNCTION_NAME !== '' && module.name.includes(DYNAMIC_FUNCTION_NAME)) {
                 getPrivateKey(module.address);
@@ -181,6 +220,10 @@ function hookLibFunctions(lib) {
             message = "Your function name is most likely: " + "'" + possibleFuncNames.join('\', \'') + "'";
             send('message_info', new TextEncoder().encode(message));
         }
+    }
+
+    if (!requestHooked) {
+        throw new Error('Failed to attach PrepareKeyRequest in ' + name + '.');
     }
 
     if (successfulHookCount === 0) {
