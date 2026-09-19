@@ -1,0 +1,134 @@
+[
+  {
+    "name": "Android 9/API 28 google_apis/x86_64 lib/libwvhidl.so",
+    "sourcePackage": "system-images;android-28;google_apis;x86_64",
+    "sourceRevision": "11",
+    "sourceMember": "lib/libwvhidl.so",
+    "sha256": "30f3b469fd897454c252014648cb67e0e6d70ca826e7e063d5b53d4ce0a1f238",
+    "libraryName": "libwvhidl.so",
+    "pointerSize": 4,
+    "argumentIndex": 4,
+    "symbol": "_ZN5wvcdm10CdmLicense17PrepareKeyRequestERKNS_18InitializationDataENS_14CdmLicenseTypeERKNSt3__13mapINS5_12basic_stringIcNS5_11char_traitsIcEENS5_9allocatorIcEEEESC_NS5_4lessISC_EENSA_INS5_4pairIKSC_SC_EEEEEEPSC_SM_"
+  },
+  {
+    "name": "Android 9/API 28 google_apis_playstore/x86 lib/libwvhidl.so",
+    "sourcePackage": "system-images;android-28;google_apis_playstore;x86",
+    "sourceRevision": "1",
+    "sourceMember": "lib/libwvhidl.so",
+    "sha256": "34526d9b84c6c1dd829d5237066ab650e96d1ab587342c043931ade0c1a00cfe",
+    "libraryName": "libwvhidl.so",
+    "pointerSize": 4,
+    "argumentIndex": 4,
+    "symbol": "_ZN5wvcdm10CdmLicense17PrepareKeyRequestERKNS_18InitializationDataENS_14CdmLicenseTypeERKNSt3__13mapINS5_12basic_stringIcNS5_11char_traitsIcEENS5_9allocatorIcEEEESC_NS5_4lessISC_EENSA_INS5_4pairIKSC_SC_EEEEEEPSC_SM_"
+  },
+  {
+    "name": "Android 10/API 29 google_apis_playstore/x86 lib/libwvhidl.so",
+    "sourcePackage": "system-images;android-29;google_apis_playstore;x86",
+    "sourceRevision": "9",
+    "sourceMember": "lib/libwvhidl.so",
+    "sha256": "23df097d2a64a63cbd89767e0719e9516c28e894c3775f810ed1f5812474c073",
+    "libraryName": "libwvhidl.so",
+    "pointerSize": 4,
+    "argumentIndex": 4,
+    "symbol": "_ZN5wvcdm10CdmLicense17PrepareKeyRequestERKNS_18InitializationDataENS_14CdmLicenseTypeERKNSt3__13mapINS5_12basic_stringIcNS5_11char_traitsIcEENS5_9allocatorIcEEEESC_NS5_4lessISC_EENSA_INS5_4pairIKSC_SC_EEEEEEPSC_SM_"
+  },
+  {
+    "name": "Android 10/API 29 google_apis_playstore/x86 lib/mediadrm/libwvdrmengine.so",
+    "sourcePackage": "system-images;android-29;google_apis_playstore;x86",
+    "sourceRevision": "9",
+    "sourceMember": "lib/mediadrm/libwvdrmengine.so",
+    "sha256": "d1c9226a5e1e21a8d58eac6a13fdfe0f5978dc947aaebbb9f968c32a2ff64649",
+    "libraryName": "libwvdrmengine.so",
+    "pointerSize": 4,
+    "argumentIndex": 4,
+    "symbol": "_ZN5wvcdm10CdmLicense17PrepareKeyRequestERKNS_18InitializationDataENS_14CdmLicenseTypeERKNSt3__13mapINS5_12basic_stringIcNS5_11char_traitsIcEENS5_9allocatorIcEEEESC_NS5_4lessISC_EENSA_INS5_4pairIKSC_SC_EEEEEEPSC_SM_"
+  },
+  {
+    "name": "Android 11/API 30 google_apis_playstore/x86 lib/libwvhidl.so",
+    "sourcePackage": "system-images;android-30;google_apis_playstore;x86",
+    "sourceRevision": "9",
+    "sourceMember": "lib/libwvhidl.so",
+    "sha256": "2ec23efd98de0f84a66ef3c811066dc6f39b68c418b0db81967176bf7392862a",
+    "libraryName": "libwvhidl.so",
+    "pointerSize": 4,
+    "argumentIndex": 4,
+    "symbol": "_ZN5wvcdm10CdmLicense17PrepareKeyRequestERKNS_18InitializationDataENS_14CdmLicenseTypeERKNSt3__13mapINS5_12basic_stringIcNS5_11char_traitsIcEENS5_9allocatorIcEEEESC_NS5_4lessISC_EENSA_INS5_4pairIKSC_SC_EEEEEEPSC_SM_"
+  },
+  {
+    "name": "Android 11/API 30 google_apis_playstore/x86 lib/mediadrm/libwvdrmengine.so",
+    "sourcePackage": "system-images;android-30;google_apis_playstore;x86",
+    "sourceRevision": "9",
+    "sourceMember": "lib/mediadrm/libwvdrmengine.so",
+    "sha256": "598b15ce9acf05ea25470a5fe11ba6451beebc1aa9506b6416ab46abb094447c",
+    "libraryName": "libwvdrmengine.so",
+    "pointerSize": 4,
+    "argumentIndex": 4,
+    "symbol": "_ZN5wvcdm10CdmLicense17PrepareKeyRequestERKNS_18InitializationDataENS_14CdmLicenseTypeERKNSt3__13mapINS5_12basic_stringIcNS5_11char_traitsIcEENS5_9allocatorIcEEEESC_NS5_4lessISC_EENSA_INS5_4pairIKSC_SC_EEEEEEPSC_SM_"
+  },
+  {
+    "name": "Android 12/API 31 google_apis_playstore/x86_64 lib64/libwvhidl.so",
+    "sourcePackage": "system-images;android-31;google_apis_playstore;x86_64",
+    "sourceRevision": "8",
+    "sourceMember": "lib64/libwvhidl.so",
+    "sha256": "42f9e496e2b34ad8e965901c2f68458d27dffcbbb8cdc5c163312bf335de7a84",
+    "libraryName": "libwvhidl.so",
+    "pointerSize": 8,
+    "argumentIndex": 5,
+    "symbol": "_ZN5wvcdm10CdmLicense17PrepareKeyRequestERKNS_18InitializationDataERKNSt3__112basic_stringIcNS4_11char_traitsIcEENS4_9allocatorIcEEEENS_14CdmLicenseTypeERKNS4_3mapISA_SA_NS4_4lessISA_EENS8_INS4_4pairISB_SA_EEEEEEPSA_SN_"
+  },
+  {
+    "name": "Android 12/API 31 google_apis_playstore/x86_64 lib64/mediadrm/libwvdrmengine.so",
+    "sourcePackage": "system-images;android-31;google_apis_playstore;x86_64",
+    "sourceRevision": "8",
+    "sourceMember": "lib64/mediadrm/libwvdrmengine.so",
+    "sha256": "b164118ad36c342ca48586a5e6a721345c3006c0477dbce2a6553e03f81c5925",
+    "libraryName": "libwvdrmengine.so",
+    "pointerSize": 8,
+    "argumentIndex": 5,
+    "symbol": "_ZN5wvcdm10CdmLicense17PrepareKeyRequestERKNS_18InitializationDataERKNSt3__112basic_stringIcNS4_11char_traitsIcEENS4_9allocatorIcEEEENS_14CdmLicenseTypeERKNS4_3mapISA_SA_NS4_4lessISA_EENS8_INS4_4pairISB_SA_EEEEEEPSA_SN_"
+  },
+  {
+    "name": "Android 12L/API 32 google_apis_playstore/x86_64 lib64/libwvhidl.so",
+    "sourcePackage": "system-images;android-32;google_apis_playstore;x86_64",
+    "sourceRevision": "4",
+    "sourceMember": "lib64/libwvhidl.so",
+    "sha256": "10fbf336be5d2a5644ddf8309fc36d3fac0a1bb861cc53d3cc19635821d7cd69",
+    "libraryName": "libwvhidl.so",
+    "pointerSize": 8,
+    "argumentIndex": 5,
+    "symbol": "_ZN5wvcdm10CdmLicense17PrepareKeyRequestERKNS_18InitializationDataERKNSt3__112basic_stringIcNS4_11char_traitsIcEENS4_9allocatorIcEEEENS_14CdmLicenseTypeERKNS4_3mapISA_SA_NS4_4lessISA_EENS8_INS4_4pairISB_SA_EEEEEEPSA_SN_"
+  },
+  {
+    "name": "Android 12L/API 32 google_apis_playstore/x86_64 lib64/mediadrm/libwvdrmengine.so",
+    "sourcePackage": "system-images;android-32;google_apis_playstore;x86_64",
+    "sourceRevision": "4",
+    "sourceMember": "lib64/mediadrm/libwvdrmengine.so",
+    "sha256": "79e57aaf602d86be3fbd4500716507382b8906e6eef72f86981294ff1ae48d2f",
+    "libraryName": "libwvdrmengine.so",
+    "pointerSize": 8,
+    "argumentIndex": 5,
+    "symbol": "_ZN5wvcdm10CdmLicense17PrepareKeyRequestERKNS_18InitializationDataERKNSt3__112basic_stringIcNS4_11char_traitsIcEENS4_9allocatorIcEEEENS_14CdmLicenseTypeERKNS4_3mapISA_SA_NS4_4lessISA_EENS8_INS4_4pairISB_SA_EEEEEEPSA_SN_"
+  },
+  {
+    "name": "Android 13/API 33 google_apis/x86_64 lib64/libwvaidl.so",
+    "sourcePackage": "system-images;android-33;google_apis;x86_64",
+    "sourceRevision": "9",
+    "sourceMember": "lib64/libwvaidl.so",
+    "sha256": "8e9fcb495ed8d82ca88009b798b9d57fd310510cb5c578391c5766aaca9a7b12",
+    "libraryName": "libwvaidl.so",
+    "pointerSize": 8,
+    "argumentIndex": 5,
+    "symbol": "_ZN5wvcdm10CdmLicense17PrepareKeyRequestERKNS_18InitializationDataERKNSt3__112basic_stringIcNS4_11char_traitsIcEENS4_9allocatorIcEEEENS_14CdmLicenseTypeERKNS4_3mapISA_SA_NS4_4lessISA_EENS8_INS4_4pairISB_SA_EEEEEEPSA_SN_"
+  },
+  {
+    "name": "Android 13/API 33 google_apis_playstore/x86_64 lib64/libwvaidl.so",
+    "sourcePackage": "system-images;android-33;google_apis_playstore;x86_64",
+    "sourceRevision": "7",
+    "sourceMember": "lib64/libwvaidl.so",
+    "sha256": "8e9fcb495ed8d82ca88009b798b9d57fd310510cb5c578391c5766aaca9a7b12",
+    "libraryName": "libwvaidl.so",
+    "pointerSize": 8,
+    "argumentIndex": 5,
+    "symbol": "_ZN5wvcdm10CdmLicense17PrepareKeyRequestERKNS_18InitializationDataERKNSt3__112basic_stringIcNS4_11char_traitsIcEENS4_9allocatorIcEEEENS_14CdmLicenseTypeERKNS4_3mapISA_SA_NS4_4lessISA_EENS8_INS4_4pairISB_SA_EEEEEEPSA_SN_"
+  }
+]

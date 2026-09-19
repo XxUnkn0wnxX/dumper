@@ -9,20 +9,23 @@ const vm = require('node:vm');
 const CURRENT_SIGNATURE = '_ZN5wvcdm10CdmLicense17PrepareKeyRequestERKNS_18InitializationDataERKNSt3__112basic_stringIcNS4_11char_traitsIcEENS4_9allocatorIcEEEENS_14CdmLicenseTypeERKNS4_3mapISA_SA_NS4_4lessISA_EENS8_INS4_4pairISB_SA_EEEEEEPSA_SN_';
 const UNKNOWN_SIGNATURE = '_ZN5wvcdm10CdmLicense17PrepareKeyRequestEUnknown';
 const source = fs.readFileSync(path.join(__dirname, '../Helpers/script.js'), 'utf8');
+const sdkSignatures = JSON.parse(fs.readFileSync(
+    path.join(__dirname, 'fixtures/cdm_signatures.json'), 'utf8'));
 
 function requestExport(name = CURRENT_SIGNATURE, address = 'request') {
     return { type: 'function', name, address };
 }
 
-function loadScript(version = 'auto', entries = [requestExport()], failAddress = null) {
+function loadScript(version = 'auto', entries = [requestExport()], failAddress = null, options = {}) {
     const attached = [];
     const messages = [];
+    const libraryName = options.libraryName || 'libwvaidl.so';
     const context = vm.createContext({
         rpc: { exports: {} },
         Process: {
-            pointerSize: 8,
+            pointerSize: options.pointerSize || 8,
             getModuleByName(name) {
-                assert.equal(name, 'libwvaidl.so');
+                assert.equal(name, libraryName);
                 return { enumerateExports: () => entries };
             }
         },
@@ -47,7 +50,7 @@ function loadScript(version = 'auto', entries = [requestExport()], failAddress =
     return {
         attached,
         messages,
-        hook: () => context.rpc.exports.hooklibfunctions({ name: 'libwvaidl.so', base: '0x1000' })
+        hook: () => context.rpc.exports.hooklibfunctions({ name: libraryName, base: '0x1000' })
     };
 }
 
@@ -73,6 +76,32 @@ test('auto uses the verified signature and captures args[5]', () => {
     assertArgumentIndex(run, 5);
     assert.ok(run.messages.some(message => message.includes('Auto-detected') &&
         message.includes('args[5]') && message.includes('16.1.0 / 17.0.0')));
+});
+
+for (const fixture of sdkSignatures) {
+    test('auto selects args[' + fixture.argumentIndex + '] for ' + fixture.name, () => {
+        const run = loadScript('auto', [requestExport(fixture.symbol)], null, fixture);
+        assert.equal(run.hook(), 1);
+        assertArgumentIndex(run, fixture.argumentIndex);
+        assert.ok(run.messages.some(message => message.includes('Auto-detected') &&
+            message.includes('args[' + fixture.argumentIndex + ']')));
+    });
+}
+
+for (const symbol of new Set(sdkSignatures.map(fixture => fixture.symbol))) {
+    test('rejects an extra parameter on a verified SDK signature', () => {
+        const run = loadScript('auto', [requestExport(symbol + 'b')]);
+        assert.throws(run.hook, /unrecognized signature/);
+        assert.equal(run.attached.length, 0);
+    });
+}
+
+test('different recognized request layouts in one library are ambiguous', () => {
+    const oldLayout = sdkSignatures.find(fixture => fixture.argumentIndex === 4);
+    assert.ok(oldLayout, 'fixtures must include a verified older layout');
+    const run = loadScript('auto', [requestExport(), requestExport(oldLayout.symbol, 'old-request')]);
+    assert.throws(run.hook, /Expected one exported PrepareKeyRequest.*found 2/);
+    assert.equal(run.attached.length, 0);
 });
 
 for (const [version, index] of [

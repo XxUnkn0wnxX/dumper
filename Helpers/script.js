@@ -102,6 +102,12 @@ function disablePrivacyMode(address) {
 // not identify the ABI. These labels describe the existing argument layouts,
 // not the exact plugin version installed on the device.
 const PREPARE_KEY_REQUEST_LAYOUTS = {
+    // InitializationData, license type, map, output string pointers.
+    '_ZN5wvcdm10CdmLicense17PrepareKeyRequestERKNS_18InitializationDataENS_14CdmLicenseTypeERKNSt3__13mapINS5_12basic_stringIcNS5_11char_traitsIcEENS5_9allocatorIcEEEESC_NS5_4lessISC_EENSA_INS5_4pairIKSC_SC_EEEEEEPSC_SM_': {
+        argumentIndex: 4,
+        versions: '14.0.0 / 15.0.0 / 16.0.0'
+    },
+    // An additional string input shifts the output pointers by one argument.
     '_ZN5wvcdm10CdmLicense17PrepareKeyRequestERKNS_18InitializationDataERKNSt3__112basic_stringIcNS4_11char_traitsIcEENS4_9allocatorIcEEEENS_14CdmLicenseTypeERKNS4_3mapISA_SA_NS4_4lessISA_EENS8_INS4_4pairISB_SA_EEEEEEPSA_SN_': {
         argumentIndex: 5,
         versions: '16.1.0 / 17.0.0'

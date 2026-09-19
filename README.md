@@ -5,9 +5,9 @@ Dumper is a Frida script to dump L3 CDMs from rooted Android devices.
 ## ** IMPORTANT **
 The `--cdm-version` flag controls the `PrepareKeyRequest` argument layout and is independent of Android and Frida version numbers. It defaults to `auto`: the Frida script checks the exported C++ signature before attaching hooks and selects a known layout. This identifies the argument layout, not an exact CDM or plugin version.
 
-Automatic detection currently recognizes the `args[5]` signature from the saved, working Android 13 `libwvaidl.so`. It has been checked offline; live automatic detection still needs verification. An unknown, missing, or ambiguous signature prevents hooking that library and reports an error. Other matching libraries are still tried; startup exits if none can be hooked.
+Automatic detection recognizes two signatures verified in libraries extracted from Android 9–13 SDK images, including Android 12L. They select `args[4]` or `args[5]` according to the library's actual signature. These checks are offline; live automatic detection still needs verification. An unknown, missing, or ambiguous signature prevents hooking that library and reports an error. Other matching libraries are still tried; startup exits if none can be hooked.
 
-Manual labels `14.0.0`, `15.0.0`, and `16.0.0` select `args[4]`; `16.1.0` and `17.0.0` select `args[5]`. Keep using a known working manual setting for older libraries until their signatures have been verified for automatic detection.
+Manual labels `14.0.0`, `15.0.0`, and `16.0.0` select `args[4]`; `16.1.0` and `17.0.0` select `args[5]`. These remain available to override automatic selection when you know the correct layout for a particular library.
 
 ## Prerequisites
 - Rooted Android device
@@ -82,17 +82,24 @@ The `client_id.bin` and `private_key.pem` pair is written only after a matching 
 
 ## Recommended setup
 
-A rooted Pixel device or Pixel emulator profile running Android 13 or earlier is recommended. Dumping with the manual `17.0.0` setting worked on the reported Pixel 6 Pro Android 13 setup. Automatic detection has been checked offline against its saved library. Older layouts remain available as explicit manual overrides until their signatures are verified. Android 14 and later have not been verified here.
+A rooted Pixel device or Pixel emulator profile running Android 13 or earlier is recommended. Dumping with the manual `17.0.0` setting worked on the reported Pixel 6 Pro Android 13 setup. Automatic detection has been checked offline against its saved library and 12 libraries from eight SDK image packages. Android 14 and later are outside the current verified scope.
 
-These historical combinations are manual starting points only; they do not drive automatic detection or establish an exact CDM version:
+The SDK samples cover the following builds. This records the observed signatures; Android/API numbers do not drive selection or establish an exact CDM version. Other library builds may differ.
 
-| Historical Android release | Manual label |
-| --- | --- |
-| Android 9 | `14.0.0` |
-| Android 10 | `15.0.0` |
-| Android 11 | `16.0.0` |
-| Android 12 | `16.1.0` |
-| Android 13 | `17.0.0` |
+| Android release | API | Library architecture | Detected output argument |
+| --- | --- | --- | --- |
+| Android 9 | 28 | x86, 32-bit | `args[4]` |
+| Android 10 | 29 | x86, 32-bit | `args[4]` |
+| Android 11 | 30 | x86, 32-bit | `args[4]` |
+| Android 12 | 31 | x86-64, 64-bit | `args[5]` |
+| Android 12L | 32 | x86-64, 64-bit | `args[5]` |
+| Android 13 | 33 | x86-64, 64-bit | `args[5]` |
+
+The samples include both Google APIs and Google Play variants for API 28 and 33,
+Google Play images for API 29–32, and the additional `libwvdrmengine.so` copies
+present in API 29–32. The default module names remain `libwvhidl.so` and
+`libwvaidl.so`. Test fixtures record the SDK package revisions, library hashes,
+and exact exported signatures without including the library binaries.
 
 ## Temporary disabling L1 to use L3 instead
 A few phone brands let us use the L1 keybox even after unlocking the bootloader (like Xiaomi). In this case, installation of a Magisk module called [liboemcrypto-disabler](https://github.com/umylive/liboemcrypto-disabler) is necessary.

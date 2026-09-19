@@ -95,9 +95,16 @@ The suite uses simulated Frida devices to check:
 - Continuing with a working library when another library fails initialization.
 
 The JavaScript harness executes the actual hook script with simulated Frida APIs.
-It checks the verified signature, all manual labels, rejection of changed or
+It checks both verified signatures, all manual labels, rejection of changed or
 ambiguous signatures before hooks are installed, exclusion of data exports, and
 request-hook attachment failures.
+
+`tests/fixtures/cdm_signatures.json` contains signatures extracted from 12 ELF
+libraries across eight Android 9–13 SDK packages, including Android 12L. Each
+fixture records its source package/revision, library SHA-256, architecture's
+pointer size, and the first output argument's position. The harness exercises
+each sample and rejects altered signatures and conflicting recognized layouts.
+Neither SDK images nor library binaries are needed to run the tests.
 
 No connected device, running Frida server, or ADB connection is required.
 The tests do not access real devices or produce key dumps. Live device discovery,
