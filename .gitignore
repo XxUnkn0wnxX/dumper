@@ -131,3 +131,7 @@ dmypy.json
 # dumper
 license_request.bin
 key_dumps
+
+# Local development files
+tmp/
+AGENTS.md

@@ -107,8 +107,8 @@ function prepareKeyRequest(address) {
         },
         onLeave: function () {
             if (this.ret) {
-                const size = Memory.readU32(ptr(this.ret).add(Process.pointerSize))
-                const arr = Memory.readByteArray(this.ret.add(Process.pointerSize * 2).readPointer(), size)
+                const size = ptr(this.ret).add(Process.pointerSize).readU32();
+                const arr = this.ret.add(Process.pointerSize * 2).readPointer().readByteArray(size);
                 send('device_info', arr);
             }
         }
@@ -124,9 +124,10 @@ function hookLibFunctions(lib) {
 
     send('message_info', new TextEncoder().encode(message));
 
-    const entries = (parseInt(Frida.version) >= 17 && mod.enumerateSymbols) 
-      ? mod.enumerateSymbols() 
-      : Module.enumerateExportsSync(name);
+    const mod = Process.getModuleByName(name);
+    const entries = (parseInt(Frida.version) >= 17 && mod.enumerateSymbols)
+      ? mod.enumerateSymbols()
+      : mod.enumerateExports();
 
     entries.forEach(function (module) {
         try {
