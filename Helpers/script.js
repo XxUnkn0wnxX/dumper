@@ -10,7 +10,20 @@ const KNOWN_DYNAMIC_FUNCTION_NAMES = [
     'kgaitijd',
     'dnvffnze',
     'cwkfcplc',
-    'crhqcdet'
+    'crhqcdet',
+    'igrqajte',
+    'ofskesua',
+    'ppsniaij',
+    'qkfrcjtw',
+    'zrtoooke',
+    'rbhjspoh',
+    'gndskkuk',
+    'wzpmjqna',
+    'faokrmio',
+    'uerbupkh',
+    'ygjiljer',
+    'dirwetvo',
+    'sxxprljw'
 ];
 
 // The TextEncoder/Decoder API isn't supported so it has to be polyfilled.
@@ -121,13 +134,12 @@ function hookLibFunctions(lib) {
     let message = 'Hooking ' + name + ' at ' + baseAddr;
     let hookedProvidedModule = false;
     let funcNames = [];
+    let successfulHookCount = 0;
 
     send('message_info', new TextEncoder().encode(message));
 
     const mod = Process.getModuleByName(name);
-    const entries = (parseInt(Frida.version) >= 17 && mod.enumerateSymbols)
-      ? mod.enumerateSymbols()
-      : mod.enumerateExports();
+    const entries = mod.enumerateExports();
 
     entries.forEach(function (module) {
         try {
@@ -149,6 +161,7 @@ function hookLibFunctions(lib) {
             }
 
             if (hookedModule) {
+                successfulHookCount += 1;
                 const message = 'Hooked ' + hookedModule + ' at ' + module.address;
                 send('message_info', new TextEncoder().encode(message));
             }
@@ -169,6 +182,15 @@ function hookLibFunctions(lib) {
             send('message_info', new TextEncoder().encode(message));
         }
     }
+
+    if (successfulHookCount === 0) {
+        throw new Error('No hooks attached for ' + name + ' after inspecting ' + entries.length + ' exports.');
+    }
+
+    const summary = 'Successfully hooked ' + successfulHookCount + ' function(s) from ' + entries.length + ' exports in ' + name;
+    send('message_info', new TextEncoder().encode(summary));
+
+    return successfulHookCount;
 }
 
 function getModuleByName(lib) {

@@ -36,7 +36,11 @@ def main():
         if 'drm' in process.name:
             for library in device.find_widevine_process(process.name):
                 device.hook_to_process(process.name, library)
-    logger.info('Functions hooked, now open the DRM stream test on Bitmovin from your Android device! https://bitmovin.com/demos/drm')
+    logger.info(
+        'Functions hooked, now open either test site from your Android device!:\n'
+        'https://bitmovin.com/demos/drm\n'
+        'https://reference.dashif.org/dash.js/v4_latest/samples/drm/widevine.html'
+    )
 
 
 if __name__ == '__main__':
