@@ -30,6 +30,13 @@ The `frida`, `frida-tools`, and `pycryptodome` requirements are unpinned, so `--
 * Execute dump_keys.py on the PC
 * Start streaming some DRM-protected content on the Android device, e.g. [Bitmovin](https://bitmovin.com/demos/drm) or the [DASH-IF Widevine demo](https://reference.dashif.org/dash.js/v4_latest/samples/drm/widevine.html)
 
+At startup, the dumper automatically selects a USB Frida device whose system metadata reports Android; iPhones and other devices are ignored. If more than one Android device is connected, run `frida-ls-devices` to find their IDs and select one explicitly, for example (with `.venv` activated):
+```
+python3 dump_keys.py --device-id emulator-5554 --cdm-version 17.0.0
+```
+
+Run the local regression tests with `.venv/bin/python -m unittest discover -s tests -v`. See [tests.md](tests.md) for setup, focused checks, and coverage.
+
 By default, the script scans exported candidate functions whose names contain only lowercase letters in the Widevine `libwvhidl.so` and `libwvaidl.so` modules, effectively brute-forcing the private-key function name.
 ```
 python3 dump_keys.py --cdm-version 17.0.0
@@ -51,6 +58,7 @@ python3 dump_keys.py --cdm-version 17.0.0 --module-name 'libwvhidl.so' 'libwvaid
 ```
     -h, --help                      Print this help text and exit.
     --cdm-version                   The CDM version of the device e.g. '17.0.0'.
+    --device-id                     The Frida USB device ID (see frida-ls-devices).
     --function-name                 The name of the function to hook to retrieve the private key.
     --module-name                   The name of the widevine `.so` modules.
 ```

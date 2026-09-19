@@ -4,6 +4,7 @@ import argparse
 import time
 import logging
 from Helpers.Device import Device
+from Helpers.DeviceSelection import DeviceSelectionError
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(lineno)d - %(levelname)s - %(message)s',
@@ -14,6 +15,7 @@ logging.basicConfig(
 def main():
     parser = argparse.ArgumentParser(description='Android Widevine L3 dumper.')
     parser.add_argument('--cdm-version', help='The CDM version of the device e.g. \'14.0.0\'', default='14.0.0')
+    parser.add_argument('--device-id', help='The Frida USB device ID (see frida-ls-devices)')
     parser.add_argument('--function-name', help='The name of the function to hook to retrieve the private key.', default='')
     parser.add_argument('--module-name', 
         nargs='+',
@@ -28,8 +30,11 @@ def main():
     module_names = args.module_name
 
     logger = logging.getLogger("main")
-    device = Device(dynamic_function_name, cdm_version, module_names)
-    logger.info('Connected to %s', device.name)
+    try:
+        device = Device(dynamic_function_name, cdm_version, module_names, args.device_id)
+    except DeviceSelectionError as error:
+        parser.error(str(error))
+    logger.info('Connected to %s (%s)', device.name, device.usb_device.id)
     logger.info('Scanning all processes')
 
     for process in device.usb_device.enumerate_processes():

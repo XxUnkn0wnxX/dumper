@@ -4,14 +4,15 @@ import base64
 import frida
 from Crypto.PublicKey import RSA
 from Helpers.wv_proto2_pb2 import SignedLicenseRequest
+from Helpers.DeviceSelection import select_android_device
 
 
 class Device:
-    def __init__(self, dynamic_function_name, cdm_version, module_names):
+    def __init__(self, dynamic_function_name, cdm_version, module_names, device_id=None):
         self.logger = logging.getLogger(__name__)
         self.saved_keys = {}
         self.widevine_libraries = module_names
-        self.usb_device = frida.get_usb_device(1)
+        self.usb_device = select_android_device(device_id)
         self.name = self.usb_device.name
 
         with open('./Helpers/script.js', 'r', encoding="utf_8") as script:
