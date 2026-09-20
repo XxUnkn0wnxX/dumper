@@ -132,6 +132,10 @@ dmypy.json
 license_request.bin
 key_dumps
 
+# Downloaded Frida server archives and unpacked binaries
+frida-server
+frida-server-*-android-*
+
 # Local development files
 tmp/
 AGENTS.md

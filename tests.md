@@ -33,7 +33,7 @@ with status `0`; a failing run reports `FAIL` or `ERROR` and exits nonzero.
 
 The checked-in protobuf binding uses the exact runtime version pinned in
 `requirements.txt`. The compatibility tests require no compiler; optional
-regeneration checks are documented in [Protobuf maintenance](Helpers/README.md).
+regeneration checks are documented in [Protobuf maintenance](tools/README.md#protobuf-regeneration).
 
 The Python suite includes the JavaScript detection wrapper. When Node.js is
 available it runs `tests/test_cdm_detection.js`; without Node.js that wrapper
@@ -71,6 +71,10 @@ Run the protobuf schema, legacy serialization, and request-handler regressions:
 ```sh
 .venv/bin/python -m unittest discover -s tests -p 'test_protobuf.py' -v
 ```
+
+For the Frida setup helper's focused tests and live device checks, see the
+[helper guide](tools/README.md#cleanup-and-maintainer-checks). Its mocked tests
+are also included in the full suite above.
 
 ## Additional checks
 

@@ -11,53 +11,10 @@ Python file by hand.
 
 ## Optional regeneration
 
-Use Python 3.10 or newer, install the project requirements into `.venv`, and have
-the desired `protoc` compiler on `PATH`. The initial migration was validated with
-`protoc 36.2` and Python `protobuf==7.36.2`. The generated file's header records
-its required Python Protobuf version; `requirements.txt` records the shipped pin.
-
-From the repository root:
-
-```sh
-.venv/bin/python tools/regenerate_protobuf.py --update-runtime
-```
-
-The helper generates a temporary binding, reads its Python Protobuf version,
-installs that exact runtime into the virtual environment, validates the generated
-import, and updates both `Helpers/wv_proto2_pb2.py` and the exact Protobuf pin in
-`requirements.txt`. Other dependencies are unchanged. It makes no Git commits.
-Use `--protoc /path/to/protoc` to select a compiler explicitly.
-
-Omit `--update-runtime` to regenerate using an already compatible environment.
-The helper refuses to replace the output files if generation or import validation
-fails. If the optional pip step succeeded before a later failure, the environment
-remains updated; the helper does not downgrade it automatically.
-
-To check the generated file and dependency pin without replacing either:
-
-```sh
-.venv/bin/python tools/regenerate_protobuf.py --check
-```
-
-This regenerates under ignored `tmp/` and compares the results byte for byte.
-Use the same compiler version recorded in the last generation to reproduce the
-checked-in output; changing compiler versions can change generated code even when
-the schema is unchanged. `--check` never installs packages. All helper modes
-resolve repository paths from the script, so they also work from another directory.
-
-After regeneration, run the regression suite and dependency check:
-
-```sh
-.venv/bin/python -m unittest discover -s tests -v
-.venv/bin/python -m pip check
-```
-
-`tests/test_protobuf.py` checks the complete legacy schema, synthetic request bytes
-serialized with the original binding and Protobuf 3.19.3, proto2 field presence,
-unknown fields, and the dumper's certificate/key matching. It neither reads real
-device captures nor writes key dumps. Intentional schema changes require reviewing
-these compatibility expectations; a compiler/runtime update alone should preserve
-them. Live device operation still needs a separate smoke test.
+The commands, compiler/runtime requirements, helper options, and validation
+steps are maintained in the [tools guide](../tools/README.md#protobuf-regeneration).
+The schema and generated binding stay in this directory; their source provenance
+is recorded below.
 
 ## Source provenance
 

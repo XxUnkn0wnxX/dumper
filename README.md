@@ -30,9 +30,13 @@ The `frida`, `frida-tools`, and `pycryptodome` requirements are unpinned, so `--
 Protobuf is pinned to the version tested with the shipped `Helpers/wv_proto2_pb2.py`.
 Normal installation uses that file directly; `protoc` is only needed by maintainers
 who choose to regenerate it. The matching source schema, optional update command,
-and verification steps are documented in [Protobuf maintenance](Helpers/README.md).
+and verification steps are documented in [Protobuf maintenance](tools/README.md#protobuf-regeneration).
 
 ## Usage:
+
+The optional [Frida server setup helper](tools/README.md#frida-server-setup)
+prepares a connected Android device or opens its shell. Its guide contains
+ADB installation instructions, commands, and all available options.
 
 * Enable USB debugging on the Android device and connect it to the PC
 * [Start frida-server on the Android device](https://frida.re/docs/android/)
