@@ -60,6 +60,67 @@ class HookLifecycleTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# DISCOVERY SESSION LIFECYCLE
+# Discovery must release its temporary attachment while allowing cancellation
+# to reach the CLI unchanged.
+# ---------------------------------------------------------------------------
+class DiscoveryLifecycleTests(unittest.TestCase):
+    def make_device(self):
+        device = Device.__new__(Device)
+        device.logger = logging.getLogger('test.discovery')
+        device.usb_device = mock.Mock()
+        device.frida_script = 'script'
+        device.widevine_libraries = ['libwvhidl.so']
+        process = mock.Mock()
+        script = mock.Mock()
+        device.usb_device.attach.return_value = process
+        process.create_script.return_value = script
+        return device, process, script
+
+    def test_discovery_interrupt_detaches_and_propagates(self):
+        for stage in ('create_script', 'load', 'lookup'):
+            with self.subTest(stage=stage):
+                device, process, script = self.make_device()
+                if stage == 'create_script':
+                    process.create_script.side_effect = KeyboardInterrupt
+                elif stage == 'load':
+                    script.load.side_effect = KeyboardInterrupt
+                else:
+                    script.exports.getmodulebyname.side_effect = KeyboardInterrupt
+
+                with self.assertRaises(KeyboardInterrupt):
+                    device.find_widevine_process('drm_process')
+
+                process.detach.assert_called_once_with()
+
+    def test_detach_failure_does_not_hide_discovery_interrupt(self):
+        device, process, script = self.make_device()
+        script.exports.getmodulebyname.side_effect = KeyboardInterrupt
+        process.detach.side_effect = RuntimeError('detach failed')
+
+        with self.assertLogs('test.discovery', level='WARNING') as logs:
+            with self.assertRaises(KeyboardInterrupt):
+                device.find_widevine_process('drm_process')
+
+        process.detach.assert_called_once_with()
+        self.assertTrue(any('detach failed' in line for line in logs.output))
+
+    def test_successful_discovery_returns_modules_and_detaches(self):
+        device, process, script = self.make_device()
+        module = object()
+        script.exports.getmodulebyname.return_value = module
+
+        self.assertEqual(
+            device.find_widevine_process('drm_process'),
+            [module],
+        )
+
+        process.detach.assert_called_once_with()
+        process.create_script.assert_called_once_with('script')
+        script.load.assert_called_once_with()
+
+
+# ---------------------------------------------------------------------------
 # COMMAND-LINE REGRESSIONS
 # The fake device mirrors the CLI's process and library calls; run_cli patches
 # argv and construction so argument forwarding can be checked without Frida.
@@ -197,6 +258,34 @@ class CdmCommandLineTests(unittest.TestCase):
         self.assertEqual(exit_error.exception.code, 2)
         parser_error.assert_called_once()
         self.assertFalse(any('Functions hooked' in line for line in logs.output))
+
+    def test_run_handles_interrupt_during_startup(self):
+        with mock.patch.object(dump_keys, 'main', side_effect=KeyboardInterrupt), \
+                self.assertLogs('main', level='INFO') as logs:
+            self.assertEqual(dump_keys.run(), 0)
+
+        self.assertTrue(any('Stopped by user.' in line for line in logs.output))
+
+    def test_run_handles_interrupt_during_wait(self):
+        with mock.patch.object(dump_keys, 'main') as main_mock, \
+                mock.patch.object(dump_keys.time, 'sleep', side_effect=KeyboardInterrupt), \
+                self.assertLogs('main', level='INFO') as logs:
+            self.assertEqual(dump_keys.run(), 0)
+
+        main_mock.assert_called_once_with()
+        self.assertTrue(any('Stopped by user.' in line for line in logs.output))
+
+    def test_run_propagates_real_errors(self):
+        with mock.patch.object(dump_keys, 'main', side_effect=RuntimeError('startup failed')):
+            with self.assertRaisesRegex(RuntimeError, 'startup failed'):
+                dump_keys.run()
+
+    def test_run_preserves_argparse_exit_code(self):
+        with mock.patch.object(sys, 'argv', ['dump_keys.py', '--cdm-version', '13.0.0']):
+            with self.assertRaises(SystemExit) as exit_error:
+                dump_keys.run()
+
+        self.assertEqual(exit_error.exception.code, 2)
 
 
 # Direct execution runs the tests defined in this module for quick focused

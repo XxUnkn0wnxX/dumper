@@ -1,9 +1,11 @@
-# Archived WKS-KEYS protobuf sources
+# 📦 Archived WKS-KEYS protobuf sources
+
+[← Back to the Dumper README](../../README.md) · [🧬 Protobuf maintenance](../../Helpers/README.md#source-provenance) · [🧰 Maintainer tools](../../tools/README.md#protobuf-regeneration)
 
 These ZIPs preserve the protobuf sources and historical generated Python modules
 from the three supplied WKS-KEYS bundles. They provide local reference copies for
-the [protobuf maintenance guide](../../Helpers/README.md), so maintainers can
-inspect the original schema without downloading the bundles again.
+the [protobuf maintenance guide](../../Helpers/README.md#source-provenance), so
+maintainers can inspect the original schema without downloading the bundles again.
 
 Regeneration uses the editable [Helpers/wv_proto2.proto](../../Helpers/wv_proto2.proto).
 The dumper and regeneration helper do not extract or execute these archives.
@@ -16,11 +18,12 @@ The dumper and regeneration helper do not extract or execute these archives.
 | [Updated protobuf sources](WKS-KEYS-protobuf-sources.zip) | `WKS-KEYS.zip` | L1 proto2/proto3 and L3 proto2/proto3/proto4 schemas and generated modules; 10 files |
 | [L3 correction protobuf sources](WKS-KEYS_L3_correction-protobuf-sources.zip) | `WKS-KEYS_L3_correction.zip` | L3 proto2/proto3/proto4 schemas and generated modules; 6 files |
 
-These are **repacked protobuf-only snapshots**, not byte-identical copies of the
-complete downloads. Each retained member keeps its original path and exact file
-bytes. ZIP metadata is normalized. Only `wv_proto*.proto` and `wv_proto*_pb2.py`
-files directly under `pywidevine/{L1,L3}/cdm/formats/` are included; the two later
-bundles also retain their original `WKS-KEYS/` path prefix.
+> 🧭 These are **repacked protobuf-only snapshots**, not byte-identical copies of
+> the complete downloads. Each retained member keeps its original path and exact
+> file bytes; ZIP metadata is normalized. Only `wv_proto*.proto` and
+> `wv_proto*_pb2.py` files directly under `pywidevine/{L1,L3}/cdm/formats/` are
+> included. The two later bundles also retain their original `WKS-KEYS/` path
+> prefix.
 
 The full `WKS-KEYS.zip` and `WKS-KEYS_L3_correction.zip` downloads contain
 device-key, client-identity, and token files, described as placeholders by the
@@ -65,9 +68,12 @@ The original bundles were obtained from:
 - [VideoHelp: WKS_KEYS updated protobuf to version 4](https://forum.videohelp.com/threads/411509-WKS_KEYS-updated-protobuf-to-version-4):
   `WKS-KEYS.zip` and `WKS-KEYS_L3_correction.zip`.
 
-Additional regeneration background:
+<details>
+<summary>🧭 Additional regeneration background</summary>
 
 - [Correcting Protobuf Downgrade to 3.19.0 error](https://forum.videohelp.com/threads/409040-Correcting-Protobuf-Downgrade-to-3-19-0-error)
+
+</details>
 
 To refresh these references, retain only the same schema/generated-module paths,
 preserve their bytes, and update this inventory and `SHA256SUMS`. Keep the original

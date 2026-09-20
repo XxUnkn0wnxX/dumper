@@ -1,13 +1,15 @@
-# Protobuf maintenance
+# 🧬 Protobuf maintenance
 
-The repository ships `wv_proto2_pb2.py` and pins its supported Python Protobuf
-runtime in `requirements.txt`. Normal installation uses that generated file;
+[← Back to the Dumper README](../README.md) · [🧰 Maintainer tools](../tools/README.md#protobuf-regeneration) · [📦 Archive inventory](../archives/wks-keys/README.md)
+
+The repository ships [`wv_proto2_pb2.py`](wv_proto2_pb2.py) and pins its supported
+Python Protobuf runtime in [`requirements.txt`](../requirements.txt). Normal installation uses that generated file;
 users do not need `protoc` or a generation step.
 
-`wv_proto2.proto` is the editable schema. Its `proto2` syntax is independent of
-the compiler and Python runtime versions. It has no schema imports, so this is
-the only `.proto` file needed to regenerate the binding. Do not edit the generated
-Python file by hand.
+[`wv_proto2.proto`](wv_proto2.proto) is the editable schema. Its `proto2` syntax
+is independent of the compiler and Python runtime versions. It has no schema
+imports, so this is the only `.proto` file needed to regenerate the binding. Do
+not edit the generated Python file by hand.
 
 ## Optional regeneration
 
@@ -18,12 +20,12 @@ is recorded below.
 
 ## Source provenance
 
-The original ZIP bundles were obtained from:
+The original ZIP bundles were obtained from these sources:
 
-- [CrymanChen/WKS-KEYS GitHub releases](https://github.com/CrymanChen/WKS-KEYS/releases):
-  `WKS-KEYS (Version 2023-04-07).zip`.
-- [VideoHelp: WKS_KEYS updated protobuf to version 4](https://forum.videohelp.com/threads/411509-WKS_KEYS-updated-protobuf-to-version-4):
-  `WKS-KEYS.zip` and `WKS-KEYS_L3_correction.zip`.
+| Source | Original bundle names |
+| --- | --- |
+| [CrymanChen/WKS-KEYS GitHub releases](https://github.com/CrymanChen/WKS-KEYS/releases) | `WKS-KEYS (Version 2023-04-07).zip` |
+| [VideoHelp: WKS_KEYS updated protobuf to version 4](https://forum.videohelp.com/threads/411509-WKS_KEYS-updated-protobuf-to-version-4) | `WKS-KEYS.zip`, `WKS-KEYS_L3_correction.zip` |
 
 The schema was copied unchanged from `WKS-KEYS (Version 2023-04-07).zip`, member:
 
@@ -49,6 +51,12 @@ uses the checked-in `Helpers/wv_proto2.proto`, and normal users do not need them
 
 The [original regeneration discussion](https://forum.videohelp.com/threads/409040-Correcting-Protobuf-Downgrade-to-3-19-0-error)
 explains why WKS-KEYS has the schema omitted from the original dumper distribution.
+
+<details>
+<summary>🧭 Historical note: the later proto4 schema</summary>
+
 The [later updated bundles](https://forum.videohelp.com/threads/411509-WKS_KEYS-updated-protobuf-to-version-4)
 also contain `wv_proto4.proto`, but that is a renamed, different proto3 schema.
 It is not needed for this dumper's existing proto2 contract.
+
+</details>

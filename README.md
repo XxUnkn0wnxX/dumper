@@ -1,117 +1,243 @@
-# Dumper
+# 🧩 Dumper
 
-Dumper is a Frida script to dump L3 CDMs from rooted Android devices.
+A Python and Frida tool for capturing Widevine L3 client IDs and matching private
+keys from rooted Android devices. This fork includes Android device selection,
+automatic request-layout detection, and optional maintainer tools.
 
-## ** IMPORTANT **
-The `--cdm-version` flag controls the `PrepareKeyRequest` argument layout and is independent of Android and Frida version numbers. It defaults to `auto`: the Frida script checks the exported C++ signature before attaching hooks and selects a known layout. This identifies the argument layout, not an exact CDM or plugin version.
+## Documentation
 
-Automatic detection recognizes two signatures verified in libraries extracted from Android 9–13 SDK images, including Android 12L. They select `args[4]` or `args[5]` according to the library's actual signature. These checks are offline; live automatic detection still needs verification. An unknown, missing, or ambiguous signature prevents hooking that library and reports an error. Other matching libraries are still tried; startup exits if none can be hooked.
+| Guide | What you will find |
+| --- | --- |
+| 🧰 [Tools](tools/README.md) | Frida server setup, shell access, ADB installation, and protobuf regeneration. |
+| 🧬 [Helpers and schema](Helpers/README.md) | The shipped Protobuf schema, generated binding, and source provenance. |
+| 📦 [Source archives](archives/wks-keys/README.md) | Local WKS-KEYS protobuf snapshots, inventory, and integrity checks. |
+| 🧪 [Local tests](tests.md) | Environment setup, regression commands, coverage, and live-test limits. |
 
-Manual labels `14.0.0`, `15.0.0`, and `16.0.0` select `args[4]`; `16.1.0` and `17.0.0` select `args[5]`. These remain available to override automatic selection when you know the correct layout for a particular library.
+> **Compatibility:** automatic detection recognizes known `PrepareKeyRequest`
+> argument layouts. It does not identify an exact CDM version or guarantee that
+> a device can be captured. See [verified scope](#verified-scope) for the available
+> evidence and remaining live tests.
 
-## Prerequisites
-- Rooted Android device
-- [Installed Frida server on the Android device](https://frida.re/docs/android/)
-- Installed [platform-tools ADB/Fastboot](https://developer.android.com/studio/releases/platform-tools) on the PC
-- Installed [Python 3.10 or newer](https://www.python.org/downloads/) on the PC
-- A known `PrepareKeyRequest` layout, if automatic detection cannot verify the library signature.
+## Requirements
 
-## Requirements:
-Create and activate a virtual environment, then install the dependencies:
+| Component | Requirement |
+| --- | --- |
+| Android | A rooted device or root-capable emulator with USB debugging enabled. |
+| Python | [Python 3.10 or newer](https://www.python.org/downloads/) on the computer. |
+| ADB | Android SDK Platform-Tools; see the [installation guide](tools/README.md#install-adb-on-the-computer). |
+| Frida | A running Android `frida-server` with root access and a version matching the host's Python `frida` package. |
+| Request layout | A recognized exported signature, or a verified manual layout override for the target library. |
 
-```
+Create the virtual environment and install [requirements.txt](requirements.txt)
+from the repository root:
+
+```sh
 python3 -m venv .venv
 source .venv/bin/activate
 python3 -m pip install --upgrade -r requirements.txt
 ```
 
-The `frida`, `frida-tools`, and `pycryptodome` requirements are unpinned, so `--upgrade` asks pip for the latest compatible releases. `frida-tools` provides the Frida CLI. Use an Android `frida-server` build that matches the installed `frida` package.
+<details>
+<summary>🪟 Windows PowerShell setup</summary>
 
-Protobuf is pinned to the version tested with the shipped `Helpers/wv_proto2_pb2.py`.
-Normal installation uses that file directly; `protoc` is only needed by maintainers
-who choose to regenerate it. The matching source schema, optional update command,
-and verification steps are documented in [Protobuf maintenance](tools/README.md#protobuf-regeneration).
+Use the environment's interpreter directly; activation is optional:
 
-## Usage:
-
-The optional [Frida server setup helper](tools/README.md#frida-server-setup)
-prepares a connected Android device or opens its shell. Its guide contains
-ADB installation instructions, commands, and all available options.
-
-* Enable USB debugging on the Android device and connect it to the PC
-* [Start frida-server on the Android device](https://frida.re/docs/android/)
-* Execute dump_keys.py on the PC
-* Start streaming some DRM-protected content on the Android device, e.g. [Bitmovin](https://bitmovin.com/demos/drm) or the [DASH-IF Widevine demo](https://reference.dashif.org/dash.js/v4_latest/samples/drm/widevine.html)
-
-At startup, the dumper automatically selects a USB Frida device whose system metadata reports Android; iPhones and other devices are ignored. If more than one Android device is connected, run `frida-ls-devices` to find their IDs and select one explicitly, for example (with `.venv` activated):
+```powershell
+py -3 -m venv .venv
+.venv\Scripts\python.exe -m pip install --upgrade -r requirements.txt
 ```
+
+Replace `python3` in the run commands below with `.venv\Scripts\python.exe`,
+and use `.venv\Scripts\frida-ls-devices.exe` for the device-listing command.
+
+</details>
+
+`frida`, `frida-tools`, and `pycryptodome` are unpinned, so `--upgrade` asks pip for
+the latest compatible releases. `frida-tools` supplies the Frida command-line
+tools. Keep the host and server versions matched when updating.
+
+Protobuf is pinned to the runtime supported by the shipped
+[generated binding](Helpers/wv_proto2_pb2.py). Normal installation uses that file
+directly. Maintainers can optionally rebuild it using the checked-in schema;
+see [protobuf regeneration](tools/README.md#protobuf-regeneration).
+
+## Quick start
+
+Run these commands from the repository root with the virtual environment active.
+
+1. Connect the Android device, enable USB debugging, and accept its authorization
+   prompt.
+2. Prepare and start Frida server using the
+   [Frida setup guide](tools/README.md#frida-server-setup). The helper installs the
+   server and opens a shell; you start the server yourself.
+3. In another host terminal, activate the environment and start the dumper:
+
+   ```sh
+   source .venv/bin/activate
+   python3 dump_keys.py
+   ```
+
+4. Wait for the log to report successful hook setup, then start playback on the
+   Android device using the [Bitmovin DRM demo](https://bitmovin.com/demos/drm) or
+   [DASH-IF Widevine demo](https://reference.dashif.org/dash.js/v4_latest/samples/drm/widevine.html).
+5. Watch for `Key pairs saved at ...`. Stop the dumper with **Ctrl+C** when finished;
+   it stays running after saving a pair. Cancellation prints `Stopped by user.`
+   and exits cleanly without a traceback, including during startup.
+
+> **Need help setting up Android Studio?** The VideoHelp walkthrough,
+> [Dumping Your own L3 CDM with Android Studio](https://forum.videohelp.com/threads/408031-Dumping-Your-own-L3-CDM-with-Android-Studio),
+> includes illustrated emulator setup and a community support discussion. Use
+> this repository's guides for the current helper commands and arguments.
+
+### Choose a device
+
+The dumper selects a Frida USB device whose system metadata identifies Android.
+It ignores iPhones and other operating systems. If multiple Android devices are
+available, list them and select an ID explicitly:
+
+```sh
+frida-ls-devices
 python3 dump_keys.py --device-id emulator-5554
 ```
 
-Run the local regression tests with `.venv/bin/python -m unittest discover -s tests -v`. See [tests.md](tests.md) for setup, focused checks, and coverage.
+This is the Frida device ID. The setup helper uses the ADB serial shown by
+`adb devices -l`; use the identifier reported by the relevant tool.
 
-The primary command uses automatic layout detection and scans exported candidate functions whose names contain only lowercase letters in the Widevine `libwvhidl.so` and `libwvaidl.so` modules:
-```
-python3 dump_keys.py
+### Output
+
+The dumper writes a pair when a license request's device certificate matches a
+previously captured RSA private key:
+
+```text
+key_dumps/
+└── <device>/private_keys/<system-id>/<key-prefix>/
+    ├── client_id.bin
+    └── private_key.pem
 ```
 
-If a library signature is unknown, automatic detection refuses to hook that library. If no supported library remains, startup exits with an error. After investigating a specific library, you can provide a known manual layout override, for example:
-```
+`<system-id>` comes from the client ID, and `<key-prefix>` is the first ten decimal
+digits of the RSA key modulus. The log reports the save directory. Hook setup or
+an unmatched request alone does not create the pair.
+
+## Layout detection and options
+
+`--cdm-version auto` is the default. The Frida agent checks the complete exported
+C++ `PrepareKeyRequest` signature before attaching hooks and selects its known
+output argument layout. Android and Frida version numbers do not drive this
+selection.
+
+An unknown, missing, or ambiguous signature stops setup for that library. Other
+matching libraries are still tried; startup fails if no library can be hooked.
+The default module list is `libwvaidl.so` and `libwvhidl.so`. Without an explicit
+function name, the agent scans function exports whose names contain only
+lowercase letters.
+
+Run `python3 dump_keys.py` with the arguments below. With no arguments it selects
+an Android device automatically and uses automatic layout detection.
+
+| Argument | Description | Default | Example usage |
+| --- | --- | --- | --- |
+| `-h`, `--help` | Show command-line help and exit. | — | `python3 dump_keys.py --help` |
+| `--cdm-version LABEL` | Select automatic detection or a known manual request layout; see the labels below. | `auto` | `python3 dump_keys.py --cdm-version auto` |
+| `--device-id ID` | Select an Android Frida USB device explicitly. | Select the only available Android device. | `python3 dump_keys.py --device-id emulator-5554` |
+| `--function-name NAME` | Hook a specific private-key function export for the target build. | Scan lowercase function exports. | `python3 dump_keys.py --function-name zrtoooke` |
+| `--module-name NAME [NAME ...]` | Search one or more named Widevine libraries. | `libwvaidl.so libwvhidl.so` | `python3 dump_keys.py --module-name libwvhidl.so libwvaidl.so` |
+
+<details>
+<summary>🔎 Manual layouts and library overrides</summary>
+
+Use a manual label only after verifying the layout for that library. These labels
+select argument positions; they do not establish the installed CDM, Android, or
+Frida version.
+
+| Manual label | First request-output argument |
+| --- | --- |
+| `14.0.0`, `15.0.0`, `16.0.0` | `args[4]` |
+| `16.1.0`, `17.0.0` | `args[5]` |
+
+```sh
 python3 dump_keys.py --cdm-version 17.0.0
 ```
 
-You can pass the function name to hook using the `--function-name` argument. Names depend on the library build; `zrtoooke` is one of the known candidates in the tested Android 13 library. You can use [this post](https://forum.videohelp.com/threads/404219-How-To-Dump-L3-CDM-From-Android-Device-s-(ONLY-Talk-About-Dumping-L3-CDMS)/page6#post2646150) to identify candidates for other builds.
-```
-python3 dump_keys.py --cdm-version 17.0.0 --function-name 'zrtoooke'
-```
+Function names depend on the library build. `zrtoooke` is a known candidate in
+the tested Android 13 library, so an explicit selection for that build looks like:
 
-You can pass one or more `.so` module names after a single `--module-name` argument. By default it looks in the `libwvhidl.so` and `libwvaidl.so` files. The name can change depending on the version and SoC, including but not limited to: `libwvaidl.so`, `libwvhidl.so`, `libwvdrmengine.so`, `libwvm.so`, `libdrmwvmplugin.so` [source](https://arxiv.org/abs/2204.09298). You can find your module name in the `/vendor/lib64/` or `/vendor/lib/` directories using an ADB shell.
-
-```
-python3 dump_keys.py --cdm-version 17.0.0 --module-name 'libwvhidl.so' 'libwvaidl.so'
+```sh
+python3 dump_keys.py --cdm-version 17.0.0 --function-name zrtoooke
 ```
 
+Library names also vary. Inspect the device's `/vendor/lib/` and `/vendor/lib64/`
+directories, then supply the names that apply to your build. Pass multiple names
+after one `--module-name` option:
 
-## Options:
-```
-    -h, --help                      Print this help text and exit.
-    --cdm-version                   PrepareKeyRequest layout: auto (default) or a known manual label.
-    --device-id                     The Frida USB device ID (see frida-ls-devices).
-    --function-name                 The name of the function to hook to retrieve the private key.
-    --module-name                   The name of the widevine `.so` modules.
+```sh
+python3 dump_keys.py --module-name libwvhidl.so libwvaidl.so
 ```
 
-## Scenario:
-1. You've got the function name
-2. You've got the private key
-3. Client ID extracted
-4. Script closed
+The runtime signature table and maintainer comments live in
+[Helpers/script.js](Helpers/script.js); the captured sample signatures live in
+[the test fixtures](tests/fixtures/cdm_signatures.json).
 
-The `client_id.bin` and `private_key.pem` pair is written only after a matching client ID and private key have both been received. Files are saved under `key_dumps/<device>/private_keys/<system-id>/<key-prefix>/`, where `<system-id>` comes from the client ID and `<key-prefix>` is the first 10 characters of the RSA key modulus. The log reports the save path when the pair is written.
+</details>
 
-## Recommended setup
+## Verified scope
 
-A rooted Pixel device or Pixel emulator profile running Android 13 or earlier is recommended. Dumping with the manual `17.0.0` setting worked on the reported Pixel 6 Pro Android 13 setup. Automatic detection has been checked offline against its saved library and 12 libraries from eight SDK image packages. Android 14 and later are outside the current verified scope.
+| Area | Evidence | Still needs verification |
+| --- | --- | --- |
+| Manual capture | Reported success on a rooted Pixel 6 Pro running Android 13 with manual layout `17.0.0`. | Other devices and library builds. |
+| Automatic layout detection | Offline checks against the saved device library and 12 library fixtures from eight Android 9–13 SDK packages, including Android 12L. | Live automatic detection and capture. |
+| Protobuf | Schema and serialization regressions using synthetic requests from the original Protobuf 3.19.3 binding. | Live device operation after the runtime migration. |
+| Frida setup helper | Mocked device/installation tests and an official release download with checksum, extraction, architecture, and cleanup checks. | Device installation, root-manager behavior, and interactive shell access. |
 
-The SDK samples cover the following builds. This records the observed signatures; Android/API numbers do not drive selection or establish an exact CDM version. Other library builds may differ.
+**Android 14 and later are outside this fork's current verified scope.** An SDK
+fixture proves how that sample's signature is classified; it does not establish
+compatibility with every device on the same Android release.
+
+<details>
+<summary>📋 Android SDK signature samples</summary>
 
 | Android release | API | Library architecture | Detected output argument |
 | --- | --- | --- | --- |
 | Android 9 | 28 | x86, 32-bit | `args[4]` |
 | Android 10 | 29 | x86, 32-bit | `args[4]` |
 | Android 11 | 30 | x86, 32-bit | `args[4]` |
-| Android 12 | 31 | x86-64, 64-bit | `args[5]` |
-| Android 12L | 32 | x86-64, 64-bit | `args[5]` |
-| Android 13 | 33 | x86-64, 64-bit | `args[5]` |
+| Android 12 | 31 | x86_64, 64-bit | `args[5]` |
+| Android 12L | 32 | x86_64, 64-bit | `args[5]` |
+| Android 13 | 33 | x86_64, 64-bit | `args[5]` |
 
-The samples include both Google APIs and Google Play variants for API 28 and 33,
-Google Play images for API 29–32, and the additional `libwvdrmengine.so` copies
-present in API 29–32. The default module names remain `libwvhidl.so` and
-`libwvaidl.so`. Test fixtures record the SDK package revisions, library hashes,
-and exact exported signatures without including the library binaries.
+The samples include Google APIs and Google Play variants for API 28 and 33,
+Google Play images for API 29–32, and additional `libwvdrmengine.so` copies
+present in the API 29–32 samples. Fixtures record SDK package revisions, library
+hashes, and exact signatures without shipping the library binaries.
 
-## Temporary disabling L1 to use L3 instead
-A few phone brands let us use the L1 keybox even after unlocking the bootloader (like Xiaomi). In this case, installation of a Magisk module called [liboemcrypto-disabler](https://github.com/umylive/liboemcrypto-disabler) is necessary.
+</details>
+
+<details>
+<summary>📎 Historical device-specific DRM workaround</summary>
+
+Earlier instructions linked to
+[liboemcrypto-disabler](https://github.com/umylive/liboemcrypto-disabler), a Magisk
+module whose upstream documentation describes masking `liboemcrypto.so` to work
+around DRM playback problems on rooted devices. This is a device-specific
+reference, not a general setup requirement. Compatibility with current devices
+has not been verified by this fork.
+
+</details>
+
+## Tests and maintenance
+
+Run the local regression suite from the repository root:
+
+```sh
+.venv/bin/python -m unittest discover -s tests -v
+```
+
+The tests use simulated devices and synthetic data. Node.js enables the included
+JavaScript harness; that check is skipped when Node.js is unavailable. See the
+[test guide](tests.md) for focused checks and coverage, and the
+[tools guide](tools/README.md) for helper-specific maintenance and live checks.
 
 ## Credits
-Thanks to the original author of the code.
+
+Thanks to the original dumper authors and contributors, and to
+[Frida](https://frida.re/docs/android/) for the instrumentation toolkit.

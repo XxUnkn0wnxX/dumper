@@ -112,7 +112,15 @@ def main():
 # Keep Python running after successful setup so Frida can deliver capture callbacks.
 # Tests call main() directly and therefore do not enter this wait loop.
 # ------------------------------------------------------------------------------
+def run():
+    try:
+        main()
+        while True:
+            time.sleep(1000)
+    except KeyboardInterrupt:
+        logging.getLogger('main').info('Stopped by user.')
+        return 0
+
+
 if __name__ == '__main__':
-    main()
-    while True:
-        time.sleep(1000)
+    raise SystemExit(run())

@@ -112,10 +112,10 @@ class Device:
     # --------------------------------------------------------------------------
     def find_widevine_process(self, process_name):
         process = self.usb_device.attach(process_name)
-        script = process.create_script(self.frida_script)
-        script.load()
         loaded_modules = []
         try:
+            script = process.create_script(self.frida_script)
+            script.load()
             for lib in self.widevine_libraries:
                 try:
                     loaded_modules.append(script.exports.getmodulebyname(lib))
@@ -125,10 +125,17 @@ class Device:
                 except Exception as e:
                     raise(e)
         finally:
-            # End the discovery attachment and return the matches collected so far.
-            # This return also suppresses pending exceptions from the query loop.
-            process.detach()
-            return loaded_modules
+            # End the discovery attachment even when setup or module lookup is
+            # interrupted. Cleanup errors must not replace the original failure.
+            try:
+                process.detach()
+            except Exception as detach_error:
+                self.logger.warning(
+                    'Failed to detach discovery session for process %s: %s',
+                    process_name,
+                    detach_error,
+                )
+        return loaded_modules
 
     # --------------------------------------------------------------------------
     # CAPTURE SESSION LIFECYCLE

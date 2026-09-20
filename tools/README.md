@@ -1,14 +1,23 @@
-# Maintainer tools
+# 🧰 Maintainer tools
+
+[← Back to the Dumper README](../README.md)
 
 This directory contains optional helpers for device setup and maintaining the
-shipped Protobuf binding. Run the examples from the repository root.
+shipped Protobuf binding. Run the examples from the repository root. The helper
+source stays beside this guide: [`setup_frida.py`](setup_frida.py) and
+[`regenerate_protobuf.py`](regenerate_protobuf.py).
 
-- [Frida server setup](#frida-server-setup): prepare Android devices or open a device shell.
-- [Protobuf regeneration](#protobuf-regeneration): regenerate or verify the shipped Python binding.
+| Guide | Use it for |
+| --- | --- |
+| 📱 [Frida server setup](#frida-server-setup) | Prepare an Android device or open its shell. |
+| 🧬 [Protobuf regeneration](#protobuf-regeneration) | Regenerate or verify the shipped Python binding. |
+
+For schema origin and archive inventory, see [Helpers source provenance](../Helpers/README.md#source-provenance)
+and the [archived WKS-KEYS protobuf sources](../archives/wks-keys/README.md).
 
 ## Frida server setup
 
-`setup_frida.py` downloads an Android Frida server from the official
+[`setup_frida.py`](setup_frida.py) downloads an Android Frida server from the official
 [Frida releases](https://github.com/frida/frida/releases), installs it as
 `/data/local/tmp/frida-server`, and opens an interactive root shell in that
 directory. You start the server yourself by entering `./frida-server`.
@@ -58,7 +67,8 @@ Only entries whose state is exactly `device` are eligible. Entries marked
 `offline`, `unauthorized`, or another state are skipped. With multiple online
 devices, select one explicitly using `--device-id`.
 
-#### Optional ADB through pip
+<details>
+<summary>🧩 Optional ADB through pip</summary>
 
 The [adbutils wheels](https://pypi.org/project/adbutils/) include a native ADB
 binary on supported host platforms. To use one inside the project's virtual
@@ -78,6 +88,8 @@ The helper searches for ADB in this order: an explicit `--adb` path, `adb` on
 the helper. It does not install packages automatically. The optional pip package
 is not added to the dumper's regular requirements. It also does not create a
 standalone `adb` shell command; this helper can locate its bundled binary directly.
+
+</details>
 
 ### Install and open the device shell
 
@@ -123,14 +135,15 @@ Options can be combined. On Windows, for example:
 .venv\Scripts\python.exe tools\setup_frida.py --ver 16.3.3 --device-id emulator-5554 --adb "C:\Android\platform-tools\adb.exe"
 ```
 
-| Option | Purpose |
-| --- | --- |
-| `--ver VERSION` | Download a specific `X.Y.Z` release instead of the latest stable release. |
-| `--arch ARCH` | Automatically detect the architecture by default, or explicitly select `x86_64`, `x86`, `arm64`, or `arm`; an explicit choice must match the device's primary ABI. |
-| `--device-id SERIAL`, `-s SERIAL` | Select an online ADB device explicitly. |
-| `--adb PATH` | Use a specific `adb` or `adb.exe` executable. |
-| `--no-shell` | Install and exit without opening the interactive shell; useful from a non-interactive terminal or automation. |
-| `--shell` | Open only a shell in `/data/local/tmp`, preferring root or `su` and falling back to the normal ADB user. |
+| Argument | Description | Default | Example usage |
+| --- | --- | --- | --- |
+| `-h`, `--help` | Show the complete helper help and exit. | — | `.venv/bin/python tools/setup_frida.py --help` |
+| `--ver VERSION` | Download a specific `X.Y.Z` Frida release instead of the latest stable release. | Latest stable release | `.venv/bin/python tools/setup_frida.py --ver 16.3.3` |
+| `--arch {auto,x86_64,x86,arm64,arm}` | Detect the primary ABI with `auto`, or select one of the four explicit architectures; an explicit choice must match the device's primary ABI. | `auto` | `.venv/bin/python tools/setup_frida.py --arch arm64` |
+| `--device-id SERIAL`, `-s SERIAL` | Select an online ADB device explicitly. | The only online `device` entry | `.venv/bin/python tools/setup_frida.py --device-id emulator-5554` |
+| `--adb PATH` | Use a specific `adb` or `adb.exe` executable. | `adb` on `PATH`, then an `adbutils` bundled binary | `.venv/bin/python tools/setup_frida.py --adb /opt/android/platform-tools/adb` |
+| `--no-shell` | Install and exit without opening the interactive shell; mutually exclusive with `--shell`. | Off; the default install flow opens a shell | `.venv/bin/python tools/setup_frida.py --no-shell` |
+| `--shell` | Open only a shell in `/data/local/tmp`, preferring root or `su` and falling back to the normal ADB user; mutually exclusive with `--no-shell`, `--ver`, and a manual (non-`auto`) `--arch`. | Off | `.venv/bin/python tools/setup_frida.py --shell` |
 
 The helper first checks whether the ADB shell is already root. Otherwise it tries
 `su -c` and the emulator-style `su 0 sh -c`. Approve any root-manager prompt on
@@ -207,8 +220,13 @@ The focused tests use mocked ADB commands and synthetic release/download data:
 .venv/bin/python -m unittest discover -s tests -p 'test_frida_setup.py' -v
 ```
 
+The test module is [`tests/test_frida_setup.py`](../tests/test_frida_setup.py).
+
 Live device installation, root-manager behavior, and the final interactive shell
 still require manual verification on the target device.
+
+<details>
+<summary>🧪 Optional live-device checklist</summary>
 
 On a test device, verify these paths:
 
@@ -222,12 +240,16 @@ On a test device, verify these paths:
    Try a deliberately mismatched `--arch` and confirm it stops before uploading.
 4. After setup, confirm its local `tmp/frida-*` download directory has been removed.
 
+</details>
+
 ## Protobuf regeneration
 
-`regenerate_protobuf.py` rebuilds the shipped `Helpers/wv_proto2_pb2.py` from
-the checked-in `Helpers/wv_proto2.proto` and keeps its supported Python runtime
-pin in `requirements.txt` aligned. Normal users use the shipped binding and do
-not need to run this helper or install `protoc`.
+[`regenerate_protobuf.py`](regenerate_protobuf.py) rebuilds the shipped
+[`Helpers/wv_proto2_pb2.py`](../Helpers/wv_proto2_pb2.py) from the checked-in
+[`Helpers/wv_proto2.proto`](../Helpers/wv_proto2.proto) and keeps its supported
+Python runtime pin in [`requirements.txt`](../requirements.txt) aligned. Normal
+users use the shipped binding and do not need to run this helper or install
+`protoc`.
 
 The schema has no imports, so all schema inputs needed for regeneration are
 already in the repository. Do not edit the generated Python file by hand.
@@ -247,9 +269,22 @@ From the repository root:
 .venv/bin/python tools/regenerate_protobuf.py --update-runtime
 ```
 
-The helper generates a temporary binding, reads its Python Protobuf version,
-installs that exact runtime into the virtual environment, validates the generated
-import, and updates both `Helpers/wv_proto2_pb2.py` and the exact Protobuf pin in
+With no mode flag, the helper uses `protoc` from `PATH`, validates the generated
+binding with the current Python environment, and replaces changed outputs. It
+does not install packages. `--check` and `--update-runtime` are mutually
+exclusive.
+
+| Argument | Description | Default | Example usage |
+| --- | --- | --- | --- |
+| *(no option)* | Regenerate, validate, and replace changed outputs. | Normal regeneration mode | `.venv/bin/python tools/regenerate_protobuf.py` |
+| `-h`, `--help` | Show the complete helper help and exit. | — | `.venv/bin/python tools/regenerate_protobuf.py --help` |
+| `--protoc PATH` | Use a specific `protoc` executable instead of the one found on `PATH`. | `protoc` | `.venv/bin/python tools/regenerate_protobuf.py --protoc /opt/homebrew/bin/protoc` |
+| `--check` | Regenerate under ignored `tmp/` and compare the binding and runtime pin without replacing either; mutually exclusive with `--update-runtime`. | Off | `.venv/bin/python tools/regenerate_protobuf.py --check` |
+| `--update-runtime` | Install the generated binding's exact Protobuf version in the virtual environment running the helper before updating tracked outputs; requires a virtual environment and is mutually exclusive with `--check`. | Off | `.venv/bin/python tools/regenerate_protobuf.py --update-runtime` |
+
+With `--update-runtime`, the helper generates a temporary binding, reads its
+Python Protobuf version, installs that exact runtime into the virtual environment,
+validates the generated import, and updates both `Helpers/wv_proto2_pb2.py` and the exact Protobuf pin in
 `requirements.txt`. Other dependencies are unchanged. It makes no Git commits.
 Use `--protoc /path/to/protoc` to select a compiler explicitly.
 
@@ -277,7 +312,7 @@ After regeneration, run the regression suite and dependency check:
 .venv/bin/python -m pip check
 ```
 
-`tests/test_protobuf.py` checks the complete legacy schema, synthetic request bytes
+[`tests/test_protobuf.py`](../tests/test_protobuf.py) checks the complete legacy schema, synthetic request bytes
 serialized with the original binding and Protobuf 3.19.3, proto2 field presence,
 unknown fields, and the dumper's certificate/key matching. It neither reads real
 device captures nor writes key dumps. Intentional schema changes require reviewing

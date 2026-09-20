@@ -103,6 +103,8 @@ The suite uses simulated Frida devices to check:
 - CLI argument forwarding, automatic versus explicit layout selection, invalid choices,
   clean hook failures, session cleanup, and no-hook failure handling.
 - Continuing with a working library when another library fails initialization.
+- Clean Ctrl+C shutdown during startup or the capture wait loop, including
+  discovery-session cleanup without swallowing cancellation.
 - Preserving the full legacy protobuf schema and parsing synthetic requests
   serialized with the original Protobuf 3.19.3 binding, including field presence,
   unknown fields, and certificate/key matching without writing output files.
