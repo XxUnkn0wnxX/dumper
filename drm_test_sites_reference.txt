@@ -1,0 +1,25 @@
+# Reference only: the dumper NEVER reads this file.
+# To change the opened page, replace the URL in drm_test_site.txt with ONE URL.
+# Test it in your Android browser first. The page must start its own playback;
+# Chrome's autoplay flag permits playback but does not select a sample for you.
+
+# Default: DASH-IF's preconfigured Widevine sample.
+# Confirmed working with the first-run/autoplay flags on the test emulator.
+https://reference.dashif.org/dash.js/v4_latest/samples/drm/widevine.html
+
+# Alternative: Bitmovin's preconfigured DRM demo.
+# Confirmed working in manual testing, but Cloudflare challenges have also
+# prevented loading on the old emulator browser. There is no automatic fallback.
+https://bitmovin.com/demos/drm
+
+# Additional references: these failed to load or play in the tested old Chrome
+# environment. They may need a newer browser, sample selection, or other setup.
+# Shaka: select a Widevine-protected sample under All Content.
+https://shaka-project.github.io/shaka-player-release/demo/#build=compiled
+# castLabs: select a protected MPEG-DASH sample.
+https://demo.castlabs.com/
+# HISPlayer: preconfigured Widevine sample.
+https://demos.hisplayer.com/html5-demo/index_drm_widevine.html
+
+# Axinom: manual configuration required (stream URL, license URL, and token).
+https://tools.axinom.com/players/shaka

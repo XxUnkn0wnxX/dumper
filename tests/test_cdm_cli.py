@@ -133,10 +133,13 @@ class CdmCommandLineTests(unittest.TestCase):
         # invoke a real ADB client or attach to the server's system session.
         adb_patch = mock.patch.object(dump_keys, 'report_adb_version')
         frida_patch = mock.patch.object(dump_keys, 'report_frida_versions')
+        browser_patch = mock.patch.object(dump_keys, 'launch_test_page', return_value=True)
         self.addCleanup(adb_patch.stop)
         self.addCleanup(frida_patch.stop)
+        self.addCleanup(browser_patch.stop)
         self.adb_report = adb_patch.start()
         self.frida_report = frida_patch.start()
+        self.browser_launch = browser_patch.start()
 
     def make_cli_device(self, processes=(), libraries=()):
         # Materialize supplied iterables as predictable process and library
@@ -171,6 +174,37 @@ class CdmCommandLineTests(unittest.TestCase):
         self.adb_report.assert_called_once()
         self.frida_report.assert_called_once_with(
             device_class.return_value.usb_device, logging.getLogger('main'),
+        )
+        self.browser_launch.assert_called_once_with(
+            'android-1', logging.getLogger('main'), site_file=dump_keys.DEFAULT_SITE_FILE,
+        )
+
+    def test_browser_launch_happens_after_successful_hooks(self):
+        device = self.make_cli_device([SimpleNamespace(name='drm_process')], ['libwvhidl.so'])
+        calls = []
+        device.hook_to_process.side_effect = lambda *_: calls.append('hook')
+        self.browser_launch.side_effect = lambda *_args, **_kwargs: calls.append('browser')
+
+        self.run_cli([], device)
+
+        self.assertEqual(calls, ['hook', 'browser'])
+
+    def test_no_browser_keeps_capture_running_without_launch(self):
+        device = self.make_cli_device([SimpleNamespace(name='drm_process')], ['libwvhidl.so'])
+
+        self.run_cli(['--no-browser'], device)
+
+        self.browser_launch.assert_not_called()
+        device.hook_to_process.assert_called_once()
+
+    def test_custom_site_file_is_forwarded_and_browser_failure_is_nonfatal(self):
+        device = self.make_cli_device([SimpleNamespace(name='drm_process')], ['libwvhidl.so'])
+        self.browser_launch.return_value = False
+
+        self.run_cli(['--site-file', 'custom-sites.txt'], device)
+
+        self.browser_launch.assert_called_once_with(
+            'android-1', logging.getLogger('main'), site_file='custom-sites.txt',
         )
 
     def test_explicit_cdm_version_is_forwarded(self):
@@ -209,6 +243,7 @@ class CdmCommandLineTests(unittest.TestCase):
         parser_error.assert_called_once()
         self.assertTrue(any('Scanning all processes' in line for line in logs.output))
         self.assertFalse(any('Functions hooked' in line for line in logs.output))
+        self.browser_launch.assert_not_called()
 
     def test_hook_error_uses_clean_cli_failure(self):
         process = SimpleNamespace(name='drm_process')
@@ -228,6 +263,7 @@ class CdmCommandLineTests(unittest.TestCase):
         self.assertEqual(exit_error.exception.code, 2)
         parser_error.assert_called_once()
         self.assertFalse(any('Functions hooked' in line for line in logs.output))
+        self.browser_launch.assert_not_called()
 
     # Direct-library failures remain isolated so one successful hook can still
     # produce the normal success result.

@@ -273,7 +273,7 @@ class DeviceSelectionTests(unittest.TestCase):
 class CommandLineIntegrationTests(unittest.TestCase):
     def setUp(self):
         # Keep optional version diagnostics isolated from the selector tests.
-        for name in ('report_adb_version', 'report_frida_versions'):
+        for name in ('report_adb_version', 'report_frida_versions', 'launch_test_page'):
             patcher = mock.patch(f'dump_keys.{name}')
             self.addCleanup(patcher.stop)
             patcher.start()

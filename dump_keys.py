@@ -11,6 +11,8 @@ import argparse
 import time
 import logging
 
+from Helpers.Browser import DEFAULT_SITE_FILE, launch_test_page
+
 # Keep --help usable even when the venv is missing required packages. Only
 # dependency import failures are deferred; broken project imports still surface.
 DEPENDENCY_IMPORT_ERROR = None
@@ -80,6 +82,14 @@ def main():
         help='The names of the widevine `.so` modules',
         default=["libwvaidl.so", "libwvhidl.so"]
     )
+    parser.add_argument(
+        '--no-browser', action='store_true',
+        help='Keep capturing without configuring or opening Chrome through ADB.',
+    )
+    parser.add_argument(
+        '--site-file', default=DEFAULT_SITE_FILE, metavar='PATH',
+        help='Read the single test-page URL from this file (default: repo drm_test_site.txt).',
+    )
     args = parser.parse_args()
     if DEPENDENCY_IMPORT_ERROR is not None:
         parser.error(
@@ -133,11 +143,19 @@ def main():
                 'and --module-name values, then retry.'
             )
         return
-    logger.info(
-        'Functions hooked, now open either test site from your Android device!:\n'
-        'https://bitmovin.com/demos/drm\n'
-        'https://reference.dashif.org/dash.js/v4_latest/samples/drm/widevine.html'
-    )
+    logger.info('Functions hooked; waiting for Widevine playback.')
+    # Launch only after a library is ready to capture. Browser setup is optional:
+    # its helper reports expected ADB/Chrome errors while capture stays active.
+    if args.no_browser:
+        logger.info(
+            'Automatic browser launch disabled. Open a Widevine test page on '
+            'the selected Android device; the configured URL is in %s.', args.site_file,
+        )
+    elif not launch_test_page(device.usb_device.id, logger, site_file=args.site_file):
+        logger.warning(
+            'Capture remains active. Open a Widevine test page manually on '
+            'the selected Android device; check %s for the configured URL.', args.site_file,
+        )
     return device
 
 

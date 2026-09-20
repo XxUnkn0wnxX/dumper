@@ -78,6 +78,12 @@ Run the version-diagnostic and capture-progress regressions:
 .venv/bin/python -m unittest tests.test_diagnostics tests.test_capture_progress -v
 ```
 
+Run the test-page configuration and ADB browser-launch regressions:
+
+```sh
+.venv/bin/python -m unittest tests.test_browser tests.test_cdm_cli -v
+```
+
 For the Frida setup helper's focused tests and live device checks, see the
 [helper guide](tools/README.md#cleanup-and-maintainer-checks). Its mocked tests
 are also included in the full suite above.
@@ -115,6 +121,10 @@ The suite uses simulated Frida devices to check:
   stopped servers, and Frida connection failures, without hiding unrelated errors.
 - Optional ADB client reporting and separate host/server Frida versions, including
   cancellation, mismatch warnings, and diagnostic-session cleanup.
+- Single-URL browser configuration, exact ADB device matching, Chrome flag
+  preservation, shell quoting, and nonfatal browser failures. Browser tests mock
+  all ADB calls; they do not open pages or change device settings. CLI tests
+  require hooks to succeed before launch and cover the `--no-browser` opt-out.
 - Client-ID CDM version reporting before key matching, retained RSA/build-info
   output, and delayed one-time guidance when RSA captures have not produced a pair.
 - Preserving the full legacy protobuf schema and parsing synthetic requests

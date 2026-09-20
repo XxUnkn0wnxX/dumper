@@ -96,9 +96,11 @@ Run these commands from the repository root with the virtual environment active.
    python3 dump_keys.py
    ```
 
-4. Wait for the log to report successful hook setup, then start playback on the
-   Android device using the [Bitmovin DRM demo](https://bitmovin.com/demos/drm) or
-   [DASH-IF Widevine demo](https://reference.dashif.org/dash.js/v4_latest/samples/drm/widevine.html).
+4. After successful hook setup, the dumper opens the URL in
+   [drm_test_site.txt](drm_test_site.txt) in Chrome on the selected Android device.
+   The default is the DASH-IF Widevine sample. Chrome is configured to skip its
+   first-run screens and allow autoplay. If automatic launch is unavailable,
+   open the page manually; capture stays running.
 5. Watch for `Key pairs saved at ...`. Stop the dumper with **Ctrl+C** when finished;
    it stays running after saving a pair. Cancellation prints `Stopped by user.`
    and exits cleanly without a traceback, including during startup.
@@ -131,8 +133,9 @@ Connect and authorize the device, and keep a root Frida server running with a
 version matching the host's `frida` package. To launch an existing server, run
 `python tools/setup_frida.py --shell` in another terminal; for a fresh setup,
 follow the [Frida setup guide](tools/README.md#frida-server-setup). The dumper
-uses Frida directly, so an external `adb` executable is optional here. The setup
-helper requires ADB for deployment.
+uses Frida directly, so an external `adb` executable is optional for capture.
+Automatic browser launch and the setup helper require ADB; both use the existing
+PATH-first, optional-venv fallback.
 
 Startup reports the available **ADB client version**, **host Python Frida
 version**, and **connected Frida server version**. ADB version discovery uses
@@ -141,6 +144,102 @@ temporary diagnostic session in the connected server, which is detached after
 the query. It is reported separately from the host package version. Version
 probes have short timeouts; unavailable diagnostics are reported and startup
 continues, while a confirmed host/server version mismatch produces a warning.
+
+### 🌐 Automatic test-page launch
+
+[drm_test_site.txt](drm_test_site.txt) contains **one active HTTPS URL**. Replace
+that line to change the opened page. [drm_test_sites_reference.txt](drm_test_sites_reference.txt)
+lists alternative pages and their testing notes; the dumper never reads that
+reference file. There is no random selection, rotation, or automatic fallback.
+
+The active file may contain blank lines and whole-line `#` comments. URL
+fragments such as `#build=compiled` are preserved. An empty, unreadable, invalid,
+or multiple-URL file produces a warning and skips browser launch. The default
+file is located relative to the repository, while a custom `--site-file` path is
+relative to your current directory unless you supply an absolute path.
+
+The launcher requires an online ADB device whose serial exactly matches the
+selected Frida device ID, and an installed, enabled `com.android.chrome`. It
+applies the settings below, then restarts Chrome before opening the URL.
+
+| Setting | Purpose and effect |
+| --- | --- |
+| `am set-debug-app --persistent com.android.chrome` | Selects Chrome as Android's debug app so supported Chrome builds can read the testing flags while ADB debugging is enabled. Replaces any previously selected debug app and persists across reboots. Does **not** enable “Wait for debugger.” |
+| `--disable-fre` | Skips Chrome's first-run flow, including welcome/sign-in prompts on supported versions. |
+| `--no-first-run` | Suppresses supported first-run initialization behavior. |
+| `--autoplay-policy=no-user-gesture-required` | Allows media autoplay without an initial tap; the page still has to request playback. |
+
+The three flags are written to `/data/local/tmp/chrome-command-line` with mode
+`0644`. Existing values of these flags are replaced; unrelated flags are
+preserved. Desktop-mode and user-agent settings are left as they are. The
+launcher does not change `ro.debuggable`, enable USB debugging, or restart Frida
+or ADB. See [Android's activity-manager commands](https://developer.android.com/tools/adb#am)
+and [Chrome's autoplay testing flag](https://developer.chrome.com/blog/autoplay/#developer-switches).
+
+These Chrome testing settings remain on the device for subsequent launches.
+The log confirms that the URL was opened, not that playback or a dump succeeded.
+The page must initiate playback itself; allowing autoplay does not press a
+page's custom Load/Play button or solve browser challenges. Missing ADB/Chrome,
+device mismatches, timeouts, or launch errors leave the dumper capturing with
+manual-playback guidance.
+
+To keep browser setup and navigation entirely manual:
+
+```sh
+python3 dump_keys.py --no-browser
+```
+
+`--no-browser` leaves the device's existing Chrome settings as they are. To use a
+different active URL file:
+
+```sh
+python3 dump_keys.py --site-file my_test_site.txt
+```
+
+<details>
+<summary>↩️ Undo Chrome testing settings on an emulator or real phone</summary>
+
+Stop the dumper first. Use `--no-browser` on future runs if you do not want these
+settings reapplied. Replace `emulator-5554` below with your phone's serial from
+`adb devices`.
+
+**Preserve any unrelated Chrome flags:** create a `.tmp` folder in the repository
+root if needed, then copy the current flags file to your computer:
+
+```sh
+adb -s emulator-5554 pull /data/local/tmp/chrome-command-line .tmp/chrome-command-line
+```
+
+Open `.tmp/chrome-command-line` in a text editor. Remove `--disable-fre`,
+`--no-first-run`, and `--autoplay-policy=no-user-gesture-required`, keeping the
+first executable placeholder (`_` or the original name) and any other flags.
+If these settings had custom values before testing, restore those values instead.
+Save the file, then apply it and clear the selected debug app:
+
+```sh
+adb -s emulator-5554 push .tmp/chrome-command-line /data/local/tmp/chrome-command-line
+adb -s emulator-5554 shell chmod 644 /data/local/tmp/chrome-command-line
+adb -s emulator-5554 shell am clear-debug-app
+adb -s emulator-5554 shell am force-stop com.android.chrome
+```
+
+Reopen Chrome normally. If the file contained only the dumper's three flags and
+you want to remove the now-unused file, you can also run:
+
+```sh
+adb -s emulator-5554 shell rm /data/local/tmp/chrome-command-line
+```
+
+`am clear-debug-app` clears Android's current debug-app selection; it does not
+restore a previously selected app. If you used another debug app before testing,
+reselect it under **Developer options → Select debug app**, including your
+previous “Wait for debugger” preference if applicable. The dumper does not save
+the previous debug-app selection or the old values of its three managed flags.
+
+These steps remove the testing overrides without clearing Chrome's browsing
+data. They do not undo any first-run choices already saved by Chrome.
+
+</details>
 
 ### Output
 
@@ -222,7 +321,8 @@ function name, the agent scans function exports whose names contain only
 lowercase letters.
 
 Run `python3 dump_keys.py` with the arguments below. With no arguments it selects
-an Android device automatically and uses automatic layout detection.
+an Android device automatically, uses automatic layout detection, and attempts
+to open the configured test page after the hooks are ready.
 
 | Argument | Description | Default | Example usage |
 | --- | --- | --- | --- |
@@ -231,6 +331,8 @@ an Android device automatically and uses automatic layout detection.
 | `--device-id ID` | Select an Android Frida USB device explicitly. | Select the only available Android device. | `python3 dump_keys.py --device-id emulator-5554` |
 | `--function-name NAME` | Hook a specific private-key function export for the target build. | Scan lowercase function exports. | `python3 dump_keys.py --function-name zrtoooke` |
 | `--module-name NAME [NAME ...]` | Search one or more named Widevine libraries. | `libwvaidl.so libwvhidl.so` | `python3 dump_keys.py --module-name libwvhidl.so libwvaidl.so` |
+| `--no-browser` | Capture without configuring or opening Chrome through ADB. | Browser launch enabled. | `python3 dump_keys.py --no-browser` |
+| `--site-file PATH` | Read the single active HTTPS test-page URL from a different text file. | Repository `drm_test_site.txt` | `python3 dump_keys.py --site-file my_test_site.txt` |
 
 <details>
 <summary>🔎 Manual layouts and library overrides</summary>
