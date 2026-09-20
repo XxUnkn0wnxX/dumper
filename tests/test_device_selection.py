@@ -4,7 +4,11 @@ from types import SimpleNamespace
 from unittest import mock
 
 from Helpers import DeviceSelection
-from Helpers.DeviceSelection import DeviceSelectionError, select_android_device
+from Helpers.DeviceSelection import (
+    FRIDA_CONNECTION_GUIDANCE,
+    DeviceSelectionError,
+    select_android_device,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +58,57 @@ class DeviceSelectionTests(unittest.TestCase):
     def test_ios_only_raises_actionable_error(self):
         with self.assertRaisesRegex(DeviceSelectionError, 'frida-ls-devices'):
             self.select_from([FakeDevice('ios-1', 'iPhone', 'ios')])
+
+    def test_empty_discovery_explains_android_server_setup(self):
+        with self.assertRaises(DeviceSelectionError) as error:
+            self.select_from([])
+
+        self.assertIn('No reachable, verified Android Frida device or server', str(error.exception))
+        self.assertIn(FRIDA_CONNECTION_GUIDANCE, str(error.exception))
+
+    def test_server_not_running_query_uses_connection_guidance(self):
+        device = FakeDevice(
+            'android-1',
+            'Unavailable Pixel',
+            parameters=RuntimeError('server not running'),
+        )
+        with self.assertRaises(DeviceSelectionError) as error:
+            self.select_from([device])
+
+        message = str(error.exception)
+        self.assertIn(FRIDA_CONNECTION_GUIDANCE, message)
+        self.assertNotIn('OS metadata must report os.id="android".', message)
+
+    def test_enumeration_failure_uses_connection_guidance(self):
+        with mock.patch.object(
+                DeviceSelection.frida,
+                'enumerate_devices',
+                side_effect=RuntimeError('transport unavailable'),
+        ):
+            with self.assertRaises(DeviceSelectionError) as error:
+                select_android_device(timeout=0)
+
+        self.assertIn(FRIDA_CONNECTION_GUIDANCE, str(error.exception))
+
+    def test_explicit_unreachable_metadata_uses_connection_guidance(self):
+        device = FakeDevice(
+            'android-1',
+            'Unavailable Pixel',
+            parameters=RuntimeError('server not running'),
+        )
+        with mock.patch.object(DeviceSelection.frida, 'get_device', return_value=device), \
+                mock.patch.object(
+                    DeviceSelection,
+                    '_query_system_parameters',
+                    side_effect=RuntimeError('server not running'),
+                ):
+            with self.assertRaises(DeviceSelectionError) as error:
+                select_android_device('android-1')
+
+        message = str(error.exception)
+        self.assertIn('Could not verify reachable Android Frida device', message)
+        self.assertIn(FRIDA_CONNECTION_GUIDANCE, message)
+        self.assertNotIn('OS metadata must report os.id="android".', message)
 
     def test_missing_or_malformed_os_metadata_is_rejected(self):
         metadata = [{}, {'os': {}}, {'os': None}, None, {'os': []}]
@@ -216,6 +271,13 @@ class DeviceSelectionTests(unittest.TestCase):
 # attachment, while an explicit device ID reaches the Device constructor.
 # ---------------------------------------------------------------------------
 class CommandLineIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        # Keep optional version diagnostics isolated from the selector tests.
+        for name in ('report_adb_version', 'report_frida_versions'):
+            patcher = mock.patch(f'dump_keys.{name}')
+            self.addCleanup(patcher.stop)
+            patcher.start()
+
     def test_device_id_is_forwarded_before_process_scan(self):
         fake_device = mock.Mock(name='device')
         fake_device.name = 'Pixel'

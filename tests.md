@@ -72,6 +72,12 @@ Run the protobuf schema, legacy serialization, and request-handler regressions:
 .venv/bin/python -m unittest discover -s tests -p 'test_protobuf.py' -v
 ```
 
+Run the version-diagnostic and capture-progress regressions:
+
+```sh
+.venv/bin/python -m unittest tests.test_diagnostics tests.test_capture_progress -v
+```
+
 For the Frida setup helper's focused tests and live device checks, see the
 [helper guide](tools/README.md#cleanup-and-maintainer-checks). Its mocked tests
 are also included in the full suite above.
@@ -105,13 +111,20 @@ The suite uses simulated Frida devices to check:
 - Continuing with a working library when another library fails initialization.
 - Clean Ctrl+C shutdown during startup or the capture wait loop, including
   discovery-session cleanup without swallowing cancellation.
+- Actionable startup errors for missing Python dependencies, unreachable devices,
+  stopped servers, and Frida connection failures, without hiding unrelated errors.
+- Optional ADB client reporting and separate host/server Frida versions, including
+  cancellation, mismatch warnings, and diagnostic-session cleanup.
+- Client-ID CDM version reporting before key matching, retained RSA/build-info
+  output, and delayed one-time guidance when RSA captures have not produced a pair.
 - Preserving the full legacy protobuf schema and parsing synthetic requests
   serialized with the original Protobuf 3.19.3 binding, including field presence,
   unknown fields, and certificate/key matching without writing output files.
 - Output names based on actual client-ID CDM metadata and Android API level,
   portable folder names, timestamped collisions that preserve earlier pairs,
   and reuse of identical callbacks within one run, using synthetic output in
-  temporary directories.
+  temporary directories. Successful-save logs include the repository-relative
+  path; failed writes do not report a successful save.
 
 The JavaScript harness executes the actual hook script with simulated Frida APIs.
 It checks both verified signatures, all manual labels, rejection of changed or

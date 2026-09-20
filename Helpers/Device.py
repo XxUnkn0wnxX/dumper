@@ -8,6 +8,7 @@ import logging
 import base64
 import re
 import stat
+import time
 from datetime import datetime, timedelta
 
 import frida
@@ -25,6 +26,13 @@ from Helpers.DeviceSelection import get_android_api_level, select_android_device
 # ordinary names, spaces, and version dots.
 # ------------------------------------------------------------------------------
 KEY_DUMPS_ROOT = 'key_dumps'
+# A key capture can arrive before the matching license request. Give the
+# request time to arrive before explaining that no pair has been saved.
+NO_PAIR_WARNING_DELAY = 15.0
+# Resolve display paths against the checkout that contains this module.  The
+# dumper may be launched from another working directory, so using ``cwd`` here
+# would make the path printed to the terminal depend on how it was started.
+REPOSITORY_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _MAX_PATH_COMPONENT_LENGTH = 120
 _INVALID_PATH_CHARACTERS = re.compile(r'[<>:"/\\|?*\x00-\x1f\x7f]')
 _WINDOWS_RESERVED_NAMES = {
@@ -178,6 +186,22 @@ def _pair_matches(path, client_id_bytes, private_key_bytes):
     )
 
 
+def _display_output_path(path):
+    """Return a stable, human-readable path relative to the repository root.
+
+    Output paths normally live below ``key_dumps/`` in the checkout.  A test,
+    embedding application, or custom ``KEY_DUMPS_ROOT`` may place them
+    elsewhere; retain a useful path in that case, including on Windows where
+    ``relpath`` can reject paths on different drives.
+    """
+    absolute_path = os.path.abspath(os.fspath(path))
+    try:
+        display_path = os.path.relpath(absolute_path, REPOSITORY_ROOT)
+    except ValueError:
+        display_path = absolute_path
+    return display_path.replace(os.sep, '/')
+
+
 # ------------------------------------------------------------------------------
 # HOOK ERRORS - give the CLI process/library context when initialization fails.
 # ------------------------------------------------------------------------------
@@ -196,6 +220,10 @@ class Device:
         # Index captured private keys by RSA modulus for later certificate matching.
         self.saved_keys = {}
         self._saved_pair_paths = {}
+        self._first_private_key_at = None
+        self._matching_pair_save_attempted = False
+        self._no_pair_warning_emitted = False
+        self._reported_client_cdm_versions = set()
         self.widevine_libraries = module_names
         self.usb_device = select_android_device(device_id)
         self.name = self.usb_device.name
@@ -224,7 +252,9 @@ class Device:
             saved_pair_paths = self._saved_pair_paths = {}
         cached_path = saved_pair_paths.get(pair_key)
         if cached_path and _pair_matches(cached_path, client_id_bytes, private_key_bytes):
-            self.logger.info('Key pair already saved at %s', cached_path)
+            self.logger.info(
+                'Key pair already saved at %s', _display_output_path(cached_path)
+            )
             return cached_path
         if cached_path:
             saved_pair_paths.pop(pair_key, None)
@@ -256,8 +286,51 @@ class Device:
             self.logger.warning('Key pair verification failed at %s', save_dir)
             return None
         saved_pair_paths[pair_key] = save_dir
-        self.logger.info('Key pairs saved at %s', save_dir)
+        self.logger.info('Key pairs saved at %s', _display_output_path(save_dir))
         return save_dir
+
+    def _has_verified_saved_pair(self):
+        """Return whether at least one cached pair still exists on disk."""
+        # Capture callbacks can add pairs while the main thread checks progress.
+        for pair_key, path in tuple(getattr(self, '_saved_pair_paths', {}).items()):
+            try:
+                client_id_bytes, private_key_bytes = pair_key
+            except (TypeError, ValueError):
+                continue
+            if _pair_matches(path, client_id_bytes, private_key_bytes):
+                return True
+        return False
+
+    def warn_if_no_pair(self, now=None):
+        """Warn once when captured RSA keys have not produced a saved pair.
+
+        The run loop calls this inexpensive check periodically.  It does not
+        infer a CDM layout from the missing output: a license request may still
+        be pending, or the output operation may already have reported its own
+        failure.
+        """
+        first_key_at = getattr(self, '_first_private_key_at', None)
+        if first_key_at is None:
+            return False
+        if getattr(self, '_no_pair_warning_emitted', False):
+            return False
+        if getattr(self, '_matching_pair_save_attempted', False):
+            return False
+        if self._has_verified_saved_pair():
+            return False
+
+        current_time = time.monotonic() if now is None else now
+        if current_time - first_key_at < NO_PAIR_WARNING_DELAY:
+            return False
+
+        self.logger.warning(
+            'RSA keys received, but no matching client ID/key pair has been saved. '
+            'Trigger DRM playback or a new license request; if this persists, '
+            'verify a supported --cdm-version <layout> using --help. '
+            'Missing output alone does not prove a mismatch.'
+        )
+        self._no_pair_warning_emitted = True
+        return True
 
     def _client_cdm_version(self, client_id):
         """Read one unambiguous CDM version from the client metadata."""
@@ -291,6 +364,8 @@ class Device:
         if 'payload' in msg:
             if msg['payload'] == 'private_key':
                 key = RSA.import_key(data)
+                if getattr(self, '_first_private_key_at', None) is None:
+                    self._first_private_key_at = time.monotonic()
                 if key.n not in self.saved_keys:
                     self.logger.debug(
                         'Retrieved key: \n\n%s\n',
@@ -314,6 +389,19 @@ class Device:
         )
         root = SignedLicenseRequest()
         root.ParseFromString(data)
+        # Report the captured metadata before matching: it can be useful even
+        # when no private key is cached or a later output operation fails.
+        client_id = root.Msg.ClientId
+        cdm_version = self._client_cdm_version(client_id)
+        if cdm_version != 'unknown':
+            reported_versions = getattr(self, '_reported_client_cdm_versions', None)
+            if reported_versions is None:
+                reported_versions = self._reported_client_cdm_versions = set()
+            if cdm_version not in reported_versions:
+                self.logger.info(
+                    'Client ID reports widevine_cdm_version: %s', cdm_version
+                )
+                reported_versions.add(cdm_version)
         public_key = root.Msg.ClientId.Token._DeviceCertificate.PublicKey
         key = RSA.importKey(public_key)
         cur = self.saved_keys.get(key.n)
@@ -321,6 +409,10 @@ class Device:
         # The key must already be cached when this request arrives. Requests are
         # not queued for retry if their corresponding private key arrives later.
         if cur is not None:
+            # Mark the attempt before export_key: a disk/write failure already
+            # emits its specific warning and should not gain a misleading
+            # generic layout hint from warn_if_no_pair().
+            self._matching_pair_save_attempted = True
             self.export_key(cur, root.Msg.ClientId)
 
     # --------------------------------------------------------------------------

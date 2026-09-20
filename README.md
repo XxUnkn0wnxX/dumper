@@ -120,6 +120,28 @@ python3 dump_keys.py --device-id emulator-5554
 This is the Frida device ID. The setup helper uses the ADB serial shown by
 `adb devices -l`; use the identifier reported by the relevant tool.
 
+If startup cannot find or reach an Android Frida device, the dumper prints an
+error with recovery steps and exits with a nonzero status, without a traceback.
+This also covers a stopped/unreachable server, connection failures during the
+initial process scan, and missing Python dependencies. Missing dependencies
+include the `python -m pip install -r requirements.txt` command in the error;
+`--help` remains available without them.
+
+Connect and authorize the device, and keep a root Frida server running with a
+version matching the host's `frida` package. To launch an existing server, run
+`python tools/setup_frida.py --shell` in another terminal; for a fresh setup,
+follow the [Frida setup guide](tools/README.md#frida-server-setup). The dumper
+uses Frida directly, so an external `adb` executable is optional here. The setup
+helper requires ADB for deployment.
+
+Startup reports the available **ADB client version**, **host Python Frida
+version**, and **connected Frida server version**. ADB version discovery uses
+PATH first, then the optional venv binary. The server version comes from a
+temporary diagnostic session in the connected server, which is detached after
+the query. It is reported separately from the host package version. Version
+probes have short timeouts; unavailable diagnostics are reported and startup
+continues, while a confirmed host/server version mismatch produces a warning.
+
 ### Output
 
 The dumper writes a pair when a license request's device certificate matches a
@@ -154,8 +176,35 @@ precise timestamp. Existing pairs are preserved, including when a later run
 captures the same pair. Repeated identical callbacks within one dumper run reuse
 that run's saved folder.
 
-The log reports the save directory. Hook setup or an unmatched request alone does
-not create a pair. Older output is left in place: its two numeric folder names
+After both files are saved and verified, the log prints the exact directory
+relative to the repository root, including any timestamp suffix:
+
+```text
+Key pairs saved at key_dumps/Android Emulator 5554/private_keys/CDM 14.0.0 - API 28
+```
+
+The existing RSA/key output and debug verbosity remain visible alongside this
+message. Hook setup or an unmatched request alone does not create a pair.
+As soon as a license request is parsed, the dumper also prints the client ID's
+`widevine_cdm_version` at INFO level, once per distinct reported version:
+
+```text
+Client ID reports widevine_cdm_version: 14.0.0
+```
+
+This metadata can appear before a matching private key is available or any files
+are saved. It requires a readable captured request, so it cannot choose the
+initial hook layout. Automatic hook selection still uses known signatures;
+`--cdm-version` selects a supported layout override. Missing or conflicting
+client metadata is reported rather than guessed.
+
+If RSA keys arrive but no pair is saved after 15 seconds, a one-time warning
+suggests triggering a new Widevine playback/license request and checking the
+supported `--cdm-version` layout options. Missing output alone does not prove a
+version mismatch. The warning is suppressed after a verified save, and a known
+matched pair that fails to save keeps its specific file-error message instead.
+
+Older output is left in place: its two numeric folder names
 were the certificate's **Widevine system ID** and the **first ten decimal digits
 of the RSA key modulus**, respectively.
 

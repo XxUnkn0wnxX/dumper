@@ -10,8 +10,32 @@
 import argparse
 import time
 import logging
-from Helpers.Device import Device, HookError
-from Helpers.DeviceSelection import DeviceSelectionError
+
+# Keep --help usable even when the venv is missing required packages. Only
+# dependency import failures are deferred; broken project imports still surface.
+DEPENDENCY_IMPORT_ERROR = None
+FRIDA_CONNECTION_ERRORS = ()
+try:
+    import frida
+    FRIDA_CONNECTION_ERRORS = (
+        frida.ServerNotRunningError,
+        frida.TransportError,
+        frida.TimedOutError,
+        frida.PermissionDeniedError,
+        frida.ProtocolError,
+        frida.ProcessNotFoundError,
+        frida.ProcessNotRespondingError,
+        frida.InvalidOperationError,
+        frida.NotSupportedError,
+        frida.OperationCancelledError,
+    )
+    from Helpers.Device import Device, HookError
+    from Helpers.Diagnostics import report_adb_version, report_frida_versions
+    from Helpers.DeviceSelection import DeviceSelectionError, FRIDA_CONNECTION_GUIDANCE
+except ImportError as error:
+    if (error.name or '').split('.')[0] not in {'frida', 'Crypto', 'google', '_cffi_backend'}:
+        raise
+    DEPENDENCY_IMPORT_ERROR = str(error)
 
 
 # ------------------------------------------------------------------------------
@@ -38,7 +62,7 @@ logging.basicConfig(
 
 # ------------------------------------------------------------------------------
 # STARTUP - argument parsing completes before any device interaction.
-# main() returns after hook setup; the script entry point below keeps it alive.
+# main() returns the device after hook setup; run() monitors capture progress.
 # ------------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description='Android Widevine L3 dumper.')
@@ -57,6 +81,13 @@ def main():
         default=["libwvaidl.so", "libwvhidl.so"]
     )
     args = parser.parse_args()
+    if DEPENDENCY_IMPORT_ERROR is not None:
+        parser.error(
+            f'Cannot load a required Python dependency: {DEPENDENCY_IMPORT_ERROR}. '
+            'Activate the dumper virtual environment and run '
+            'python -m pip install -r requirements.txt, then retry.'
+        )
+        return
 
     dynamic_function_name = args.function_name
     cdm_version = args.cdm_version
@@ -65,12 +96,14 @@ def main():
     # Device construction verifies the target OS and prepares the JavaScript agent.
     # Expected setup failures become argparse errors with a nonzero exit status.
     logger = logging.getLogger("main")
+    report_adb_version(logger)
     try:
         device = Device(dynamic_function_name, cdm_version, module_names, args.device_id)
     except (DeviceSelectionError, HookError) as error:
         parser.error(str(error))
         return
     logger.info('Connected to %s (%s)', device.name, device.usb_device.id)
+    report_frida_versions(device.usb_device, logger)
     logger.info('Scanning all processes')
 
     # Scan processes whose names contain 'drm', then try each requested library
@@ -92,7 +125,7 @@ def main():
         if hook_errors:
             parser.error(
                 'No Widevine libraries were hooked. Hook failures: '
-                + '; '.join(hook_errors)
+                + '; '.join(hook_errors) + '. ' + FRIDA_CONNECTION_GUIDANCE
             )
         else:
             parser.error(
@@ -105,21 +138,42 @@ def main():
         'https://bitmovin.com/demos/drm\n'
         'https://reference.dashif.org/dash.js/v4_latest/samples/drm/widevine.html'
     )
+    return device
 
 
 # ------------------------------------------------------------------------------
 # PROCESS LIFETIME
 # Keep Python running after successful setup so Frida can deliver capture callbacks.
+# Check capture progress without changing the agent or its streamed output.
 # Tests call main() directly and therefore do not enter this wait loop.
 # ------------------------------------------------------------------------------
 def run():
     try:
-        main()
+        device = main()
         while True:
-            time.sleep(1000)
+            time.sleep(1)
+            device.warn_if_no_pair()
     except KeyboardInterrupt:
         logging.getLogger('main').info('Stopped by user.')
         return 0
+    except FRIDA_CONNECTION_ERRORS as error:
+        # Discovery can succeed just before the device/server disappears. Keep
+        # expected Frida failures from scanning/attachment out of tracebacks,
+        # while allowing unrelated programming errors to remain diagnosable.
+        if isinstance(error, frida.ServerNotRunningError):
+            reason = 'Frida server is not running or cannot be reached'
+        elif isinstance(error, frida.TransportError):
+            reason = 'Connection to the Android device or Frida server was lost'
+        elif isinstance(error, frida.TimedOutError):
+            reason = 'The Android device or Frida server did not respond in time'
+        elif isinstance(error, frida.PermissionDeniedError):
+            reason = 'Frida access to the Android device or process was denied'
+        else:
+            reason = 'Frida could not access the Android device or its processes'
+        logging.getLogger('main').error(
+            '%s: %s. %s', reason, error, FRIDA_CONNECTION_GUIDANCE,
+        )
+        return 1
 
 
 if __name__ == '__main__':

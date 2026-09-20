@@ -24,6 +24,15 @@ class DeviceSelectionError(RuntimeError):
     """Raised when a verified Android Frida device cannot be selected."""
 
 
+FRIDA_CONNECTION_GUIDANCE = (
+    'Connect and authorize an Android device, ensure root frida-server is running, '
+    'and keep the host Python frida version matched to the server. '
+    'For an installed server, run "python tools/setup_frida.py --shell"; '
+    'for a fresh setup, run "python tools/setup_frida.py". '
+    'Run frida-ls-devices to list reachable IDs and pass one with --device-id.'
+)
+
+
 # ------------------------------------------------------------------------------
 # DEVICE LABELS - tolerate incomplete metadata while building diagnostic messages.
 # IDs identify devices for selection/caching; display names never establish the OS.
@@ -170,8 +179,7 @@ def _select_explicit_device(device_id):
         device = frida.get_device(device_id, timeout=1)
     except Exception as error:
         raise DeviceSelectionError(
-            f'Could not find Frida USB device {device_id!r}. '
-            'Run frida-ls-devices and pass one of its IDs with --device-id.'
+            f'Could not reach Frida device {device_id!r}. {FRIDA_CONNECTION_GUIDANCE}'
         ) from error
 
     if getattr(device, 'type', None) != 'usb':
@@ -180,7 +188,13 @@ def _select_explicit_device(device_id):
             'Run frida-ls-devices and choose an Android USB device.'
         )
 
-    if _classify_android(device) is not True:
+    classification = _classify_android(device)
+    if classification is None:
+        raise DeviceSelectionError(
+            f'Could not verify reachable Android Frida device {device_id!r}. '
+            f'{FRIDA_CONNECTION_GUIDANCE}'
+        )
+    if classification is False:
         raise DeviceSelectionError(
             f'Frida device {device_id!r} is not a verified Android device. '
             'The OS metadata must report os.id="android".'
@@ -275,7 +289,7 @@ def select_android_device(device_id=None, timeout=1.0):
 
     # The polling window and any final snapshot produced no verified target.
     raise DeviceSelectionError(
-        'No verified Android USB device found. Start frida-server on an Android '
-        'device, or run frida-ls-devices and select an ID with --device-id. '
+        'No reachable, verified Android Frida device or server was found. '
+        f'{FRIDA_CONNECTION_GUIDANCE} '
         'Only devices whose OS metadata reports os.id="android" are accepted.'
     )

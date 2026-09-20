@@ -1,4 +1,6 @@
 import logging
+from pathlib import Path
+import subprocess
 import sys
 import unittest
 from types import SimpleNamespace
@@ -126,6 +128,16 @@ class DiscoveryLifecycleTests(unittest.TestCase):
 # argv and construction so argument forwarding can be checked without Frida.
 # ---------------------------------------------------------------------------
 class CdmCommandLineTests(unittest.TestCase):
+    def setUp(self):
+        # Version probes have their own mocked tests. CLI fixtures must never
+        # invoke a real ADB client or attach to the server's system session.
+        adb_patch = mock.patch.object(dump_keys, 'report_adb_version')
+        frida_patch = mock.patch.object(dump_keys, 'report_frida_versions')
+        self.addCleanup(adb_patch.stop)
+        self.addCleanup(frida_patch.stop)
+        self.adb_report = adb_patch.start()
+        self.frida_report = frida_patch.start()
+
     def make_cli_device(self, processes=(), libraries=()):
         # Materialize supplied iterables as predictable process and library
         # lists for the mock.
@@ -142,7 +154,7 @@ class CdmCommandLineTests(unittest.TestCase):
         # replacing only its Device constructor and process arguments.
         with mock.patch.object(sys, 'argv', ['dump_keys.py', *argv]), \
                 mock.patch.object(dump_keys, 'Device', return_value=device) as device_class:
-            dump_keys.main()
+            self.assertIs(dump_keys.main(), device)
         return device_class
 
     # Defaults and explicit choices must reach Device, while invalid choices
@@ -155,6 +167,10 @@ class CdmCommandLineTests(unittest.TestCase):
 
         device_class.assert_called_once_with(
             '', 'auto', ['libwvaidl.so', 'libwvhidl.so'], None
+        )
+        self.adb_report.assert_called_once()
+        self.frida_report.assert_called_once_with(
+            device_class.return_value.usb_device, logging.getLogger('main'),
         )
 
     def test_explicit_cdm_version_is_forwarded(self):
@@ -266,6 +282,45 @@ class CdmCommandLineTests(unittest.TestCase):
 
         self.assertTrue(any('Stopped by user.' in line for line in logs.output))
 
+    def test_connection_failures_during_startup_exit_without_waiting(self):
+        for error_type in dump_keys.FRIDA_CONNECTION_ERRORS:
+            for stage in ('construct', 'enumerate', 'discover'):
+                with self.subTest(error=error_type.__name__, stage=stage):
+                    device = self.make_cli_device([SimpleNamespace(name='drm_process')])
+                    failure = error_type('simulated connection failure')
+                    if stage == 'enumerate':
+                        device.usb_device.enumerate_processes.side_effect = failure
+                    elif stage == 'discover':
+                        device.find_widevine_process.side_effect = failure
+                    with mock.patch.object(sys, 'argv', ['dump_keys.py']), \
+                            mock.patch.object(dump_keys, 'Device', return_value=device) as constructor, \
+                            mock.patch.object(dump_keys.time, 'sleep') as wait, \
+                            self.assertLogs('main', level='INFO') as logs:
+                        if stage == 'construct':
+                            constructor.side_effect = failure
+                        self.assertEqual(dump_keys.run(), 1)
+                    wait.assert_not_called()
+                    device.hook_to_process.assert_not_called()
+                    messages = '\n'.join(logs.output)
+                    self.assertIn('simulated connection failure', messages)
+                    self.assertIn('setup_frida.py --shell', messages)
+                    self.assertNotIn('Functions hooked', messages)
+
+    def test_wrapped_hook_connection_failure_has_recovery_guidance(self):
+        device = self.make_cli_device(
+            [SimpleNamespace(name='drm_process')], ['libwvhidl.so'],
+        )
+        device.hook_to_process.side_effect = HookError('unable to communicate with remote frida-server')
+        with mock.patch.object(sys, 'argv', ['dump_keys.py']), \
+                mock.patch.object(dump_keys, 'Device', return_value=device), \
+                mock.patch('argparse.ArgumentParser.error', side_effect=SystemExit(2)) as parser_error, \
+                mock.patch.object(dump_keys.time, 'sleep') as wait:
+            with self.assertRaises(SystemExit) as exit_error:
+                dump_keys.run()
+        self.assertEqual(exit_error.exception.code, 2)
+        self.assertIn('setup_frida.py --shell', parser_error.call_args.args[0])
+        wait.assert_not_called()
+
     def test_run_handles_interrupt_during_wait(self):
         with mock.patch.object(dump_keys, 'main') as main_mock, \
                 mock.patch.object(dump_keys.time, 'sleep', side_effect=KeyboardInterrupt), \
@@ -274,6 +329,15 @@ class CdmCommandLineTests(unittest.TestCase):
 
         main_mock.assert_called_once_with()
         self.assertTrue(any('Stopped by user.' in line for line in logs.output))
+
+    def test_run_checks_capture_progress_while_waiting(self):
+        device = mock.Mock()
+        with mock.patch.object(dump_keys, 'main', return_value=device), \
+                mock.patch.object(dump_keys.time, 'sleep', side_effect=[None, KeyboardInterrupt]) as wait, \
+                self.assertLogs('main', level='INFO'):
+            self.assertEqual(dump_keys.run(), 0)
+        device.warn_if_no_pair.assert_called_once_with()
+        self.assertEqual(wait.call_args_list, [mock.call(1), mock.call(1)])
 
     def test_run_propagates_real_errors(self):
         with mock.patch.object(dump_keys, 'main', side_effect=RuntimeError('startup failed')):
@@ -286,6 +350,35 @@ class CdmCommandLineTests(unittest.TestCase):
                 dump_keys.run()
 
         self.assertEqual(exit_error.exception.code, 2)
+
+
+# ---------------------------------------------------------------------------
+# MISSING DEPENDENCIES
+# -S disables site packages only in a child interpreter. This tests the real
+# entry point without uninstalling anything or contacting an Android device.
+# ---------------------------------------------------------------------------
+class MissingDependencyTests(unittest.TestCase):
+    def run_without_site_packages(self, *arguments):
+        return subprocess.run(
+            [sys.executable, '-S', 'dump_keys.py', *arguments],
+            cwd=Path(__file__).resolve().parents[1],
+            capture_output=True, text=True, timeout=10, check=False,
+        )
+
+    def test_missing_frida_dependency_prints_install_guidance_without_traceback(self):
+        result = self.run_without_site_packages()
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('required Python dependency', result.stderr)
+        self.assertIn('frida', result.stderr)
+        self.assertIn('python -m pip install -r requirements.txt', result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+        self.assertNotIn('Functions hooked', result.stdout + result.stderr)
+
+    def test_help_works_without_frida_installed(self):
+        result = self.run_without_site_packages('--help')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('--device-id', result.stdout)
+        self.assertNotIn('Traceback', result.stderr)
 
 
 # Direct execution runs the tests defined in this module for quick focused

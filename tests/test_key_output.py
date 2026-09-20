@@ -74,6 +74,21 @@ class KeyOutputTests(unittest.TestCase):
         second = Path(device.export_key(self.key, self.client('16.0.0')))
         self.assertIn('CDM 16.0.0 - API 28', second.name)
 
+    def test_success_log_uses_repository_relative_timestamped_path(self):
+        client_id = self.client('14.0.0')
+        # Keep the fixture outside the checkout while making its temporary
+        # parent act as the module's repository root for the display contract.
+        with mock.patch.object(device_module, 'REPOSITORY_ROOT', self.tempdir.name):
+            first = self.device().export_key(self.key, client_id)
+            with self.assertLogs('test.key_output', level='INFO') as logs:
+                second = self.device().export_key(self.key, client_id)
+
+        relative = Path(second).relative_to(Path(self.tempdir.name)).as_posix()
+        self.assertEqual(relative, f'key_dumps/Pixel 8/private_keys/{Path(second).name}')
+        self.assertTrue(Path(second).name.startswith('CDM 14.0.0 - API 28 ('))
+        self.assertNotEqual(first, second)
+        self.assertIn(f'Key pairs saved at {relative}', logs.output[-1])
+
     def test_exact_pair_reuses_path_only_within_one_device_run(self):
         client_id = self.client('14.0.0')
         device = self.device()
@@ -119,10 +134,13 @@ class KeyOutputTests(unittest.TestCase):
     def test_write_failure_does_not_cache_incomplete_pair(self):
         client_id = self.client('14.0.0')
         device = self.device()
-        with mock.patch.object(
-            device_module, '_write_exclusive', side_effect=[None, OSError('write failed')]
-        ):
-            self.assertIsNone(device.export_key(self.key, client_id))
+        with self.assertLogs('test.key_output', level='INFO') as logs:
+            with mock.patch.object(
+                device_module, '_write_exclusive', side_effect=[None, OSError('write failed')]
+            ):
+                self.assertIsNone(device.export_key(self.key, client_id))
+
+        self.assertFalse(any('Key pairs saved at' in line for line in logs.output))
 
         output = Path(device.export_key(self.key, client_id))
         self.assertEqual((output / 'client_id.bin').read_bytes(), client_id.SerializeToString())
