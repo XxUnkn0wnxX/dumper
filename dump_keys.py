@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
 
+# ------------------------------------------------------------------------------
+# CLI ENTRY POINT
+# Parse settings, select a verified Android device, and install the Frida hooks.
+# Helpers/Device.py handles agent messages and output; Helpers/script.js runs the
+# hooks and automatic signature detection inside the Android process.
+# ------------------------------------------------------------------------------
+
 import argparse
 import time
 import logging
@@ -7,6 +14,12 @@ from Helpers.Device import Device, HookError
 from Helpers.DeviceSelection import DeviceSelectionError
 
 
+# ------------------------------------------------------------------------------
+# REQUEST LAYOUT OPTIONS
+# These labels select PrepareKeyRequest argument layouts, not Android or Frida
+# versions. Keep manual labels aligned with manualLayouts in Helpers/script.js;
+# automatic signature entries are maintained in that script's layout table.
+# ------------------------------------------------------------------------------
 CDM_VERSION_CHOICES = [
     'auto',
     '14.0.0',
@@ -16,12 +29,17 @@ CDM_VERSION_CHOICES = [
     '17.0.0',
 ]
 
+# Shared log formatting also applies to the device and selection helpers.
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(lineno)d - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %I:%M:%S %p',
     level=logging.DEBUG,
 )
 
+# ------------------------------------------------------------------------------
+# STARTUP - argument parsing completes before any device interaction.
+# main() returns after hook setup; the script entry point below keeps it alive.
+# ------------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(description='Android Widevine L3 dumper.')
     parser.add_argument(
@@ -44,6 +62,8 @@ def main():
     cdm_version = args.cdm_version
     module_names = args.module_name
 
+    # Device construction verifies the target OS and prepares the JavaScript agent.
+    # Expected setup failures become argparse errors with a nonzero exit status.
     logger = logging.getLogger("main")
     try:
         device = Device(dynamic_function_name, cdm_version, module_names, args.device_id)
@@ -53,6 +73,8 @@ def main():
     logger.info('Connected to %s (%s)', device.name, device.usb_device.id)
     logger.info('Scanning all processes')
 
+    # Scan processes whose names contain 'drm', then try each requested library
+    # found in them. A library's hook failure does not prevent trying another one.
     hooked_libraries = 0
     hook_errors = []
     for process in device.usb_device.enumerate_processes():
@@ -64,6 +86,8 @@ def main():
                 except HookError as error:
                     hook_errors.append(str(error))
                     logger.error('%s', error)
+    # Require at least one initialized library before showing playback guidance.
+    # Hook setup alone does not establish that a matching key pair was captured.
     if not hooked_libraries:
         if hook_errors:
             parser.error(
@@ -83,6 +107,11 @@ def main():
     )
 
 
+# ------------------------------------------------------------------------------
+# PROCESS LIFETIME
+# Keep Python running after successful setup so Frida can deliver capture callbacks.
+# Tests call main() directly and therefore do not enter this wait loop.
+# ------------------------------------------------------------------------------
 if __name__ == '__main__':
     main()
     while True:

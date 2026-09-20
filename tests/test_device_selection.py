@@ -7,6 +7,11 @@ from Helpers import DeviceSelection
 from Helpers.DeviceSelection import DeviceSelectionError, select_android_device
 
 
+# ---------------------------------------------------------------------------
+# FAKE FRIDA DEVICES
+# FakeDevice exposes the fields and probe behavior used by the selector, so
+# discovery regressions run without a connected Android or iOS device.
+# ---------------------------------------------------------------------------
 _UNSET = object()
 
 
@@ -24,12 +29,16 @@ class FakeDevice:
 
 
 class DeviceSelectionTests(unittest.TestCase):
+    # Keep enumeration and metadata probes deterministic while exercising the
+    # same selector entry point used by the command-line application.
     def select_from(self, devices, **kwargs):
         with mock.patch.object(DeviceSelection.frida, 'enumerate_devices', return_value=devices), \
                 mock.patch.object(DeviceSelection, '_query_system_parameters',
                                   side_effect=lambda device, timeout=2.0: device.query_system_parameters()):
             return select_android_device(timeout=0, **kwargs)
 
+    # OS metadata and candidate filtering must win over display names and
+    # desktop or non-USB device entries.
     def test_iphone_before_android_selects_android(self):
         iphone = FakeDevice('iphone-1', 'Android-looking iPhone', 'ios')
         android = FakeDevice('android-1', 'Pixel', 'android')
@@ -76,6 +85,8 @@ class DeviceSelectionTests(unittest.TestCase):
         with self.assertRaisesRegex(DeviceSelectionError, 'android-1.*Pixel A.*android-2.*Pixel B'):
             self.select_from([first, second])
 
+    # Explicit IDs use direct Frida lookup and still verify the selected OS
+    # before any process scan or attachment can begin.
     def test_explicit_android_only_probes_selected_device(self):
         selected = FakeDevice('android-1', 'Pixel', 'android')
 
@@ -114,6 +125,8 @@ class DeviceSelectionTests(unittest.TestCase):
                 select_android_device(timeout=0)
         query.assert_not_called()
 
+    # Discovery retries after an empty snapshot so a just-connected emulator
+    # can be selected within the configured window.
     def test_discovery_retries_after_initially_empty_snapshot(self):
         android = FakeDevice('android-1', 'Emulator', 'android')
         with mock.patch.object(DeviceSelection.frida, 'enumerate_devices',
@@ -126,6 +139,8 @@ class DeviceSelectionTests(unittest.TestCase):
             self.assertIs(select_android_device(timeout=1), android)
         sleep.assert_called_once()
 
+    # A final bounded snapshot catches a device that appears while an earlier
+    # candidate is being probed.
     def test_final_snapshot_catches_android_appearing_during_probe(self):
         iphone = FakeDevice('iphone-1', 'iPhone', 'ios')
         android = FakeDevice('android-1', 'Emulator', 'android')
@@ -140,6 +155,7 @@ class DeviceSelectionTests(unittest.TestCase):
         self.assertEqual(enumerate_devices.call_count, 2)
         self.assertEqual(query.call_count, 2)
 
+    # Timed metadata probes must cancel their timer on both success and error.
     def test_os_probe_timer_is_cancelled(self):
         class FakeCancellable:
             def __init__(self):
@@ -194,6 +210,11 @@ class DeviceSelectionTests(unittest.TestCase):
         self.assertTrue(FakeTimer.instances[-1].cancelled)
 
 
+# ---------------------------------------------------------------------------
+# COMMAND-LINE INTEGRATION
+# These checks prove selection failures stop before process enumeration or
+# attachment, while an explicit device ID reaches the Device constructor.
+# ---------------------------------------------------------------------------
 class CommandLineIntegrationTests(unittest.TestCase):
     def test_device_id_is_forwarded_before_process_scan(self):
         fake_device = mock.Mock(name='device')
@@ -243,5 +264,7 @@ class CommandLineIntegrationTests(unittest.TestCase):
         iphone.attach.assert_not_called()
 
 
+# Running this file directly keeps the focused selector regressions easy to
+# invoke during maintainer debugging.
 if __name__ == '__main__':
     unittest.main()

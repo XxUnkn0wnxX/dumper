@@ -7,15 +7,27 @@ import time
 import frida
 
 
+# ------------------------------------------------------------------------------
+# DISCOVERY STATE
+# OS_QUERY_TIMEOUT applies to each metadata probe, separately from the discovery
+# polling window. The sentinel distinguishes an unprobed ID from a cached failure.
+# ------------------------------------------------------------------------------
 LOGGER = logging.getLogger(__name__)
 OS_QUERY_TIMEOUT = 2.0
 _UNCLASSIFIED = object()
 
 
+# ------------------------------------------------------------------------------
+# SELECTION ERRORS - surfaced by the CLI before any process scan or attachment.
+# ------------------------------------------------------------------------------
 class DeviceSelectionError(RuntimeError):
     """Raised when a verified Android Frida device cannot be selected."""
 
 
+# ------------------------------------------------------------------------------
+# DEVICE LABELS - tolerate incomplete metadata while building diagnostic messages.
+# IDs identify devices for selection/caching; display names never establish the OS.
+# ------------------------------------------------------------------------------
 def _device_id(device):
     return getattr(device, 'id', None)
 
@@ -30,6 +42,11 @@ def _device_label(device):
     return f'{device_id or "<missing-id>"} ({name or "<unnamed>"})'
 
 
+# ------------------------------------------------------------------------------
+# CANCELLABLE OS PROBE
+# A daemon timer requests Frida cancellation if a metadata query stalls. Cancel
+# the timer on success and failure to avoid leaving a pending cancellation behind.
+# ------------------------------------------------------------------------------
 def _query_system_parameters(device, timeout=OS_QUERY_TIMEOUT):
     """Query one device while allowing Frida to cancel a stalled request."""
     cancellable = frida.Cancellable()
@@ -43,6 +60,11 @@ def _query_system_parameters(device, timeout=OS_QUERY_TIMEOUT):
         timer.cancel()
 
 
+# ------------------------------------------------------------------------------
+# ANDROID CLASSIFICATION
+# Accept only os.id == 'android'. A device name, USB transport, or Linux label is
+# insufficient. Query/metadata failures are logged and excluded from selection.
+# ------------------------------------------------------------------------------
 def _classify_android(device):
     """Return True for Android, False for another known OS, or None on error."""
     try:
@@ -75,6 +97,11 @@ def _classify_android(device):
     return True
 
 
+# ------------------------------------------------------------------------------
+# EXPLICIT DEVICE SELECTION - used when --device-id is supplied.
+# Look up only the requested ID, then require USB transport and verified Android
+# metadata. An explicit choice does not bypass either check.
+# ------------------------------------------------------------------------------
 def _select_explicit_device(device_id):
     if not device_id:
         raise DeviceSelectionError(
@@ -103,6 +130,11 @@ def _select_explicit_device(device_id):
     return device
 
 
+# ------------------------------------------------------------------------------
+# PUBLIC SELECTOR AND AUTOMATIC DISCOVERY
+# Explicit IDs use the path above. Otherwise inspect USB devices in successive
+# snapshots and return one verified Android target; multiple targets need an ID.
+# ------------------------------------------------------------------------------
 def select_android_device(device_id=None, timeout=1.0):
     """Return one verified Android USB Frida device.
 
@@ -118,6 +150,8 @@ def select_android_device(device_id=None, timeout=1.0):
     except (TypeError, ValueError) as error:
         raise ValueError('timeout must be a non-negative number') from error
 
+    # The discovery deadline controls polling, not the duration of an active OS
+    # query. Per-device probes can extend elapsed time beyond this polling window.
     deadline = time.monotonic() + discovery_timeout
     classifications = {}
     final_snapshot_attempted = False
@@ -129,6 +163,8 @@ def select_android_device(device_id=None, timeout=1.0):
             LOGGER.warning('Frida device discovery failed: %s', error)
             devices = []
 
+        # Rebuild candidates from the current snapshot so vanished devices are not
+        # selected merely because an earlier snapshot classified them as Android.
         android_devices = []
         classified_new_device = False
         for device in devices:
@@ -143,6 +179,8 @@ def select_android_device(device_id=None, timeout=1.0):
                 )
                 continue
 
+            # Cache every result, including False and None. A slow or failed ID
+            # is probed at most once during this selector invocation.
             classification = classifications.get(current_id, _UNCLASSIFIED)
             if classification is _UNCLASSIFIED:
                 classification = _classify_android(device)
@@ -152,6 +190,8 @@ def select_android_device(device_id=None, timeout=1.0):
             if classification is True:
                 android_devices.append(device)
 
+        # Inspect the whole snapshot before choosing; enumeration order must not
+        # silently select between multiple verified Android devices.
         if len(android_devices) > 1:
             devices_description = ', '.join(
                 _device_label(device) for device in android_devices
@@ -175,6 +215,7 @@ def select_android_device(device_id=None, timeout=1.0):
             break
         time.sleep(min(0.05, remaining))
 
+    # The polling window and any final snapshot produced no verified target.
     raise DeviceSelectionError(
         'No verified Android USB device found. Start frida-server on an Android '
         'device, or run frida-ls-devices and select an ID with --device-id. '

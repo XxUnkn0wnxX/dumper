@@ -13,7 +13,7 @@ Manual labels `14.0.0`, `15.0.0`, and `16.0.0` select `args[4]`; `16.1.0` and `1
 - Rooted Android device
 - [Installed Frida server on the Android device](https://frida.re/docs/android/)
 - Installed [platform-tools ADB/Fastboot](https://developer.android.com/studio/releases/platform-tools) on the PC
-- Installed [Python 3](https://www.python.org/downloads/) on the PC
+- Installed [Python 3.10 or newer](https://www.python.org/downloads/) on the PC
 - A known `PrepareKeyRequest` layout, if automatic detection cannot verify the library signature.
 
 ## Requirements:
@@ -26,6 +26,11 @@ python3 -m pip install --upgrade -r requirements.txt
 ```
 
 The `frida`, `frida-tools`, and `pycryptodome` requirements are unpinned, so `--upgrade` asks pip for the latest compatible releases. `frida-tools` provides the Frida CLI. Use an Android `frida-server` build that matches the installed `frida` package.
+
+Protobuf is pinned to the version tested with the shipped `Helpers/wv_proto2_pb2.py`.
+Normal installation uses that file directly; `protoc` is only needed by maintainers
+who choose to regenerate it. The matching source schema, optional update command,
+and verification steps are documented in [Protobuf maintenance](Helpers/README.md).
 
 ## Usage:
 

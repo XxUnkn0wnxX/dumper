@@ -31,9 +31,9 @@ environment is optional. No separate test-runner package is needed.
 Each test is listed with its result. A successful run ends with `OK` and exits
 with status `0`; a failing run reports `FAIL` or `ERROR` and exits nonzero.
 
-The existing protobuf dependency and generated bindings may emit deprecation
-warnings on newer Python versions. Those warnings alone do not indicate a
-failed test; check the final test result.
+The checked-in protobuf binding uses the exact runtime version pinned in
+`requirements.txt`. The compatibility tests require no compiler; optional
+regeneration checks are documented in [Protobuf maintenance](Helpers/README.md).
 
 The Python suite includes the JavaScript detection wrapper. When Node.js is
 available it runs `tests/test_cdm_detection.js`; without Node.js that wrapper
@@ -66,12 +66,18 @@ Run the JavaScript harness directly when Node.js is installed:
 node tests/test_cdm_detection.js
 ```
 
+Run the protobuf schema, legacy serialization, and request-handler regressions:
+
+```sh
+.venv/bin/python -m unittest discover -s tests -p 'test_protobuf.py' -v
+```
+
 ## Additional checks
 
 Compile the Python files without running the dumper:
 
 ```sh
-.venv/bin/python -m compileall -q Helpers/Device.py Helpers/DeviceSelection.py dump_keys.py tests
+.venv/bin/python -m compileall -q Helpers dump_keys.py tests tools
 ```
 
 Check the installed dependency versions for conflicts:
@@ -93,6 +99,9 @@ The suite uses simulated Frida devices to check:
 - CLI argument forwarding, automatic versus explicit layout selection, invalid choices,
   clean hook failures, session cleanup, and no-hook failure handling.
 - Continuing with a working library when another library fails initialization.
+- Preserving the full legacy protobuf schema and parsing synthetic requests
+  serialized with the original Protobuf 3.19.3 binding, including field presence,
+  unknown fields, and certificate/key matching without writing output files.
 
 The JavaScript harness executes the actual hook script with simulated Frida APIs.
 It checks both verified signatures, all manual labels, rejection of changed or

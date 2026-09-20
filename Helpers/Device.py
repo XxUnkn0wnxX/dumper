@@ -1,19 +1,35 @@
+# ------------------------------------------------------------------------------
+# DEVICE BRIDGE
+# Select the Android target, load Helpers/script.js through Frida, and process
+# the agent's messages. Python matches captured keys to client IDs and saves pairs.
+# ------------------------------------------------------------------------------
 import os
 import logging
 import base64
 import frida
 from Crypto.PublicKey import RSA
+# Generated bindings decode the captured license request. Edit wv_proto2.proto
+# and run tools/regenerate_protobuf.py to rebuild them; see Helpers/README.md.
 from Helpers.wv_proto2_pb2 import SignedLicenseRequest
 from Helpers.DeviceSelection import select_android_device
 
 
+# ------------------------------------------------------------------------------
+# HOOK ERRORS - give the CLI process/library context when initialization fails.
+# ------------------------------------------------------------------------------
 class HookError(RuntimeError):
     """Raised when a Frida library hook cannot be installed."""
 
 
 class Device:
+    # --------------------------------------------------------------------------
+    # TARGET AND AGENT SETUP
+    # Verify Android before scanning processes; prepare the JavaScript with the
+    # CLI settings. Signature matching itself runs inside the JavaScript agent.
+    # --------------------------------------------------------------------------
     def __init__(self, dynamic_function_name, cdm_version, module_names, device_id=None):
         self.logger = logging.getLogger(__name__)
+        # Index captured private keys by RSA modulus for later certificate matching.
         self.saved_keys = {}
         self.widevine_libraries = module_names
         self.usb_device = select_android_device(device_id)
@@ -24,6 +40,11 @@ class Device:
         self.frida_script = self.frida_script.replace(r'${DYNAMIC_FUNCTION_NAME}', dynamic_function_name)
         self.frida_script = self.frida_script.replace(r'${CDM_VERSION}', cdm_version)
 
+    # --------------------------------------------------------------------------
+    # PAIR OUTPUT
+    # Called after license_request_message finds a matching cached private key.
+    # Group output by device, certificate system ID, and decimal modulus prefix.
+    # --------------------------------------------------------------------------
     def export_key(self, key, client_id):
         save_dir = os.path.join(
             'key_dumps',
@@ -43,6 +64,11 @@ class Device:
             writer.write(key.exportKey('PEM'))
         self.logger.info('Key pairs saved at %s', save_dir)
 
+    # --------------------------------------------------------------------------
+    # AGENT MESSAGE DISPATCH - payload names must agree with Helpers/script.js.
+    # private_key carries DER key bytes; device_info carries a license request;
+    # message_info carries UTF-8 status text. Frida supplies bytes through data.
+    # --------------------------------------------------------------------------
     def on_message(self, msg, data):
         if 'payload' in msg:
             if msg['payload'] == 'private_key':
@@ -58,6 +84,11 @@ class Device:
             elif msg['payload'] == 'message_info':
                 self.logger.info(data.decode())
 
+    # --------------------------------------------------------------------------
+    # CLIENT ID AND KEY MATCHING
+    # Parse the request's device certificate and use its public-key modulus to
+    # select a captured private key. A request alone does not create output files.
+    # --------------------------------------------------------------------------
     def license_request_message(self, data):
         self.logger.debug(
             'Retrieved build info: \n\n%s\n',
@@ -69,9 +100,16 @@ class Device:
         key = RSA.importKey(public_key)
         cur = self.saved_keys.get(key.n)
 
+        # The key must already be cached when this request arrives. Requests are
+        # not queued for retry if their corresponding private key arrives later.
         if cur is not None:
             self.export_key(cur, root.Msg.ClientId)
 
+    # --------------------------------------------------------------------------
+    # LIBRARY DISCOVERY
+    # Use a temporary attachment to query the requested module names through the
+    # agent. This RPC only locates modules; hook_to_process installs capture hooks.
+    # --------------------------------------------------------------------------
     def find_widevine_process(self, process_name):
         process = self.usb_device.attach(process_name)
         script = process.create_script(self.frida_script)
@@ -87,9 +125,16 @@ class Device:
                 except Exception as e:
                     raise(e)
         finally:
+            # End the discovery attachment and return the matches collected so far.
+            # This return also suppresses pending exceptions from the query loop.
             process.detach()
             return loaded_modules
 
+    # --------------------------------------------------------------------------
+    # CAPTURE SESSION LIFECYCLE
+    # Register the message handler before loading and initializing the agent.
+    # Successful sessions stay attached; initialization failures become HookError.
+    # --------------------------------------------------------------------------
     def hook_to_process(self, process, library):
         session = None
         try:
@@ -100,6 +145,8 @@ class Device:
             script.exports.hooklibfunctions(library)
             return session
         except Exception as error:
+            # Detach a partially initialized session without replacing the original
+            # hook error if cleanup itself fails.
             if session is not None:
                 try:
                     session.detach()

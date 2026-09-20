@@ -1,4 +1,4 @@
 frida
 frida-tools
-protobuf == 3.19.3
+protobuf==7.36.2
 pycryptodome

@@ -8,8 +8,15 @@ import dump_keys
 from Helpers.Device import Device, HookError
 
 
+# ---------------------------------------------------------------------------
+# HOOK SESSION LIFECYCLE
+# The fixtures create only the Device state needed for a controlled Frida
+# session, allowing cleanup and retained-session behavior to be tested locally.
+# ---------------------------------------------------------------------------
 class HookLifecycleTests(unittest.TestCase):
     def make_device(self, session):
+        # Bypass hardware initialization and make attach return the supplied
+        # session so each lifecycle stage can fail deterministically.
         device = Device.__new__(Device)
         device.logger = logging.getLogger('test.device')
         device.usb_device = mock.Mock()
@@ -18,6 +25,8 @@ class HookLifecycleTests(unittest.TestCase):
         device.on_message = mock.Mock()
         return device
 
+    # Every failed stage must detach the partially-created session and preserve
+    # the library/process context in the reported HookError.
     def test_failed_session_is_detached_and_context_is_reported(self):
         for stage in ('create_script', 'load', 'rpc'):
             with self.subTest(stage=stage):
@@ -50,8 +59,15 @@ class HookLifecycleTests(unittest.TestCase):
         script.exports.hooklibfunctions.assert_called_once_with('libwvhidl.so')
 
 
+# ---------------------------------------------------------------------------
+# COMMAND-LINE REGRESSIONS
+# The fake device mirrors the CLI's process and library calls; run_cli patches
+# argv and construction so argument forwarding can be checked without Frida.
+# ---------------------------------------------------------------------------
 class CdmCommandLineTests(unittest.TestCase):
     def make_cli_device(self, processes=(), libraries=()):
+        # Materialize supplied iterables as predictable process and library
+        # lists for the mock.
         device = mock.Mock(name='device')
         device.name = 'Pixel'
         device.usb_device.id = 'android-1'
@@ -61,11 +77,15 @@ class CdmCommandLineTests(unittest.TestCase):
         return device
 
     def run_cli(self, argv, device):
+        # Keep command-line tests on the real dump_keys.main() entry point while
+        # replacing only its Device constructor and process arguments.
         with mock.patch.object(sys, 'argv', ['dump_keys.py', *argv]), \
                 mock.patch.object(dump_keys, 'Device', return_value=device) as device_class:
             dump_keys.main()
         return device_class
 
+    # Defaults and explicit choices must reach Device, while invalid choices
+    # must fail before any device is constructed.
     def test_default_cdm_version_is_auto(self):
         process = SimpleNamespace(name='drm_process')
         device_class = self.run_cli(
@@ -96,6 +116,8 @@ class CdmCommandLineTests(unittest.TestCase):
         self.assertEqual(exit_error.exception.code, 2)
         device_class.assert_not_called()
 
+    # CLI failures use argparse's clean error path and suppress a success
+    # banner whenever no library completed successfully.
     def test_zero_hooked_libraries_suppresses_success_banner(self):
         device = self.make_cli_device()
 
@@ -130,6 +152,8 @@ class CdmCommandLineTests(unittest.TestCase):
         parser_error.assert_called_once()
         self.assertFalse(any('Functions hooked' in line for line in logs.output))
 
+    # Direct-library failures remain isolated so one successful hook can still
+    # produce the normal success result.
     def test_one_library_failure_does_not_block_another(self):
         for outcomes in (
             [HookError('args[5] signature was not recognized'), mock.Mock()],
@@ -151,6 +175,8 @@ class CdmCommandLineTests(unittest.TestCase):
                 self.assertTrue(any('Functions hooked' in line for line in logs.output))
                 self.assertEqual(device.hook_to_process.call_count, 2)
 
+    # When every library fails, the CLI must report an error without claiming
+    # that any functions were hooked.
     def test_all_library_failures_exit_without_success_banner(self):
         process = SimpleNamespace(name='drm_process')
         device = self.make_cli_device(
@@ -173,5 +199,7 @@ class CdmCommandLineTests(unittest.TestCase):
         self.assertFalse(any('Functions hooked' in line for line in logs.output))
 
 
+# Direct execution runs the tests defined in this module for quick focused
+# checks during CLI maintenance.
 if __name__ == '__main__':
     unittest.main()
