@@ -24,7 +24,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Iterable
+from typing import Iterable, NoReturn
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import Request, urlopen
@@ -147,14 +147,19 @@ def resolve_adb(requested: str | None) -> str:
     except metadata.PackageNotFoundError:
         distribution = None
     if distribution is not None:
-        for name in ('adb', 'adb.exe'):
-            candidate = Path(distribution.locate_file(f'adbutils/binaries/{name}'))
-            if candidate.is_file() and (sys.platform.startswith('win') or os_access_executable(candidate)):
-                return str(candidate)
+        # The wheel owns companion files (including Windows DLLs), so execute
+        # in place. Never copy a binary away from its packaged dependencies or
+        # select another host platform's executable by its filename alone.
+        name = 'adb.exe' if sys.platform.startswith('win') else 'adb'
+        candidate = Path(distribution.locate_file(f'adbutils/binaries/{name}'))
+        if candidate.is_file() and (sys.platform.startswith('win') or os_access_executable(candidate)):
+            return str(candidate.resolve())
 
     raise SetupError(
         'Android Debug Bridge (adb) was not found. Install Android SDK Platform-Tools '
-        '(Homebrew: brew install --cask android-platform-tools), put adb on PATH, or pass --adb.'
+        '(Homebrew: brew install --cask android-platform-tools), put adb on PATH, or pass --adb. '
+        'For an optional bundled ADB on supported hosts, run '
+        'python -m pip install -r tools/requirements-adb.txt using the same Python environment as this helper.'
     )
 
 
@@ -810,37 +815,95 @@ def prepare_existing_server(adb: str, serial: str, root_mode: str) -> str:
     return 'ready'
 
 
-def foreground_server_command(interactive: bool) -> str:
+def root_shell_continuation(root_mode: str) -> str:
+    """Keep a su parent alive so leaving its root prompt returns to ADB's shell."""
+    if root_mode == 'direct':
+        return 'exec /system/bin/sh -i'
+    # This child is the operator's root prompt. Its last command's exit status
+    # must not be mistaken for a failed setup when the operator leaves su.
+    return '/system/bin/sh -i; exit 0'
+
+
+def root_session_command(root_mode: str, command: str, *, interactive: bool) -> list[str]:
+    """Wrap su sessions with the ordinary ADB shell to return to after exit."""
+    shell_arguments = root_command(root_mode, command)
+    if not interactive or root_mode == 'direct':
+        return shell_arguments
+    # Keep the unprivileged shell outside su. A caught INT preserves this
+    # waiting shell while the foreground process receives Ctrl+C normally.
+    # Setup/server failures still propagate without dropping into a prompt.
+    outer_command = (
+        "trap ':' INT; "
+        f'{shell_arguments[1]}; frida_root_status=$?; trap - INT; '
+        'if test "$frida_root_status" -ne 0; then exit "$frida_root_status"; fi; '
+        f'cd {shlex.quote(REMOTE_DIRECTORY)} || exit $?; '
+        'exec /system/bin/sh -i'
+    )
+    return ['shell', remote_quote('sh', '-c', outer_command)]
+
+
+def foreground_server_command(interactive: bool, root_mode: str = 'direct') -> str:
     """Build the remote foreground lifecycle after one final process-free scan."""
     preflight = managed_server_absent_command()
     directory = shlex.quote(REMOTE_DIRECTORY)
     server = './frida-server'
+    # Print from Android, after cd succeeds, so a quiet server still visibly
+    # identifies the device, working directory, and command being run.
+    launch_line = (
+        'frida_device=$(getprop ro.product.device 2>/dev/null); '
+        'frida_device=${frida_device:-android}; '
+        "printf '\\n%s:%s # ./frida-server\\n' \"$frida_device\" \"$PWD\""
+    )
     if not interactive:
-        return f'{preflight}; cd {directory} || exit $?; exec {server}'
+        return f'{preflight}; cd {directory} || exit $?; {launch_line}; exec {server}'
     # The INT trap lets the foreground server receive Ctrl-C while preserving
     # this root shell long enough to offer its prompt after exit status 0/130.
     return (
-        f'{preflight}; cd {directory} || exit $?; '
+        f'{preflight}; cd {directory} || exit $?; {launch_line}; '
         "trap ':' INT; "
-        f'{server}; frida_status=$?; trap - INT; '
-        'if test "$frida_status" -eq 0 || test "$frida_status" -eq 130; then exec /system/bin/sh -i; fi; '
+        f'{server}; frida_status=$?; '
+        'if test "$frida_status" -eq 0 || test "$frida_status" -eq 130; then '
+        f'{root_shell_continuation(root_mode)}; fi; '
         'exit "$frida_status"'
     )
 
 
-def run_foreground_server(adb: str, serial: str, root_mode: str, *, interactive: bool) -> int:
-    """Run Frida server attached to this terminal without a subprocess timeout."""
-    shell_arguments = root_command(root_mode, foreground_server_command(interactive))
+def handoff_to_adb(argv: list[str], purpose: str) -> NoReturn:
+    """Give ADB inherited terminal streams after all temporary cleanup finishes."""
+    try:
+        # exec does not flush Python's buffered output. No Python finally block
+        # runs after success either: callers must finish cleanup before here.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        if sys.platform.startswith('win'):
+            # Windows exec starts a new process and exits the caller, letting
+            # the host shell resume too early. Wait without capturing I/O or
+            # imposing a timeout; subprocess also preserves Windows quoting.
+            try:
+                raise SystemExit(subprocess.run(argv, check=False).returncode)
+            except KeyboardInterrupt:
+                raise SystemExit(130) from None
+        os.execv(argv[0], argv)
+    except OSError as error:
+        raise SetupError(f'{purpose}: {error}') from error
+
+
+def run_foreground_server(adb: str, serial: str, root_mode: str, *, interactive: bool) -> NoReturn:
+    """Give ADB the terminal for the server and any subsequent Android shells."""
+    shell_arguments = root_session_command(
+        root_mode, foreground_server_command(interactive, root_mode), interactive=interactive,
+    )
     terminal_mode = '-t' if interactive or (sys.stdin.isatty() and sys.stdout.isatty()) else '-T'
     argv = [adb, '-s', serial, shell_arguments[0], terminal_mode, shell_arguments[1]]
-    try:
-        # Do not capture or time-limit the session: frida-server deliberately
-        # owns this terminal until it exits or Ctrl-C stops it.
-        return subprocess.run(argv, check=False).returncode
-    except KeyboardInterrupt:
-        return 130
-    except OSError as error:
-        raise SetupError(f'Running foreground Frida server failed: {error}') from error
+    if interactive:
+        print('Handing terminal to ADB. Frida runs in the foreground; Ctrl+C stops it and opens the root prompt.')
+        if root_mode != 'direct':
+            print('Then exit leaves su; exit again closes the ADB shell.')
+        else:
+            print('ADB is already root; exit closes the ADB shell.')
+    else:
+        print('Handing terminal to ADB. Frida runs in the foreground until it stops; no follow-up shell.')
+    handoff_to_adb(argv, 'Running foreground Frida server failed')
 
 
 def install_server(adb: str, serial: str, root_mode: str, server: Path,
@@ -921,20 +984,16 @@ def warn_frida_version(version: str) -> None:
         )
 
 
-def open_device_shell(adb: str, serial: str, root_mode: str) -> int:
+def open_device_shell(adb: str, serial: str, root_mode: str) -> NoReturn:
     """Hand the user a root shell in the install directory after server setup."""
-    command = f'cd {shlex.quote(REMOTE_DIRECTORY)} && exec /system/bin/sh -i'
-    shell_arguments = root_command(root_mode, command)
+    command = (
+        f'cd {shlex.quote(REMOTE_DIRECTORY)} || exit $?; '
+        f"trap ':' INT; {root_shell_continuation(root_mode)}"
+    )
+    shell_arguments = root_session_command(root_mode, command, interactive=True)
     argv = [adb, '-s', serial, shell_arguments[0], '-t', shell_arguments[1]]
-    # -t asks adb for a terminal.  Keep stdin/stdout/stderr inherited so this is
-    # an actual operator shell rather than a captured subprocess.
-    try:
-        return subprocess.run(argv, check=False).returncode
-    except KeyboardInterrupt:
-        print('\nInteractive Android shell closed.', file=sys.stderr)
-        return 130
-    except OSError as error:
-        raise SetupError(f'Opening interactive Android shell failed: {error}') from error
+    print('Handing terminal to ADB for the Android root shell.')
+    handoff_to_adb(argv, 'Opening interactive Android shell failed')
 
 
 # ------------------------------------------------------------------------------
@@ -969,6 +1028,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         adb = resolve_adb(args.adb)
+        print(f'Using ADB: {adb}', flush=True)
+        # Require an online ADB transport before root checks, scratch/cache
+        # access, release lookup, downloads, or any device changes.
         device = select_device(list_adb_devices(adb), args.device_id)
         if args.shell:
             # Shell-only may start a server, so it requires root. It skips the

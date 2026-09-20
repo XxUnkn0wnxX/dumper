@@ -31,7 +31,7 @@ automatic request-layout detection, and optional maintainer tools.
 | --- | --- |
 | Android | A rooted device or root-capable emulator with USB debugging enabled. |
 | Python | [Python 3.10 or newer](https://www.python.org/downloads/) on the computer. |
-| ADB | Android SDK Platform-Tools; see the [installation guide](tools/README.md#install-adb-on-the-computer). |
+| ADB | Android SDK Platform-Tools, or the optional bundled fallback in [tools/requirements-adb.txt](tools/requirements-adb.txt); see the [installation guide](tools/README.md#install-adb-on-the-computer). |
 | Frida | A running Android `frida-server` with root access and a version matching the host's Python `frida` package. |
 | Request layout | A recognized exported signature, or a verified manual layout override for the target library. |
 

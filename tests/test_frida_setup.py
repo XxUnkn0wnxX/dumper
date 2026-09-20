@@ -1,4 +1,5 @@
 import hashlib
+from contextlib import ExitStack
 from http.client import IncompleteRead
 import io
 import json
@@ -635,31 +636,100 @@ class InstallAndShellTests(unittest.TestCase):
         self.assertIn('exec ./frida-server', noninteractive)
         self.assertNotIn('exec /system/bin/sh -i', noninteractive)
 
-        with mock.patch.object(setup.subprocess, 'run', return_value=Completed(returncode=7)) as run, \
+        with mock.patch.object(setup, 'handoff_to_adb') as handoff, \
                 mock.patch.object(setup.sys, 'stdin', TtyBuffer()), \
                 mock.patch.object(setup.sys, 'stdout', TtyBuffer()):
-            self.assertEqual(setup.run_foreground_server('/adb', 'serial', 'su-0', interactive=True), 7)
-        argv = run.call_args.args[0]
+            self.assertIsNone(setup.run_foreground_server('/adb', 'serial', 'su-0', interactive=True))
+        argv = handoff.call_args.args[0]
         self.assertEqual(argv[:5], ['/adb', '-s', 'serial', 'shell', '-t'])
         self.assertIn("su 0 sh -c", argv[-1])
-        self.assertNotIn('timeout', run.call_args.kwargs)
-        self.assertNotIn('capture_output', run.call_args.kwargs)
+        self.assertEqual(handoff.call_args.args[1], 'Running foreground Frida server failed')
 
         non_tty = mock.Mock(isatty=mock.Mock(return_value=False))
-        with mock.patch.object(setup.subprocess, 'run', return_value=Completed(returncode=0)) as run, \
+        with mock.patch.object(setup, 'handoff_to_adb') as handoff, \
                 mock.patch.object(setup.sys, 'stdin', non_tty), \
                 mock.patch.object(setup.sys, 'stdout', non_tty):
-            self.assertEqual(setup.run_foreground_server('/adb', 'serial', 'direct', interactive=False), 0)
-        self.assertEqual(run.call_args.args[0][4], '-T')
+            self.assertIsNone(setup.run_foreground_server('/adb', 'serial', 'direct', interactive=False))
+        self.assertEqual(handoff.call_args.args[0][4], '-T')
 
-        with mock.patch.object(setup.subprocess, 'run', return_value=Completed(returncode=0)) as run, \
+        with mock.patch.object(setup, 'handoff_to_adb') as handoff, \
                 mock.patch.object(setup.sys, 'stdin', TtyBuffer()), \
                 mock.patch.object(setup.sys, 'stdout', TtyBuffer()):
-            self.assertEqual(setup.run_foreground_server('/adb', 'serial', 'direct', interactive=False), 0)
-        self.assertEqual(run.call_args.args[0][4], '-t')
+            self.assertIsNone(setup.run_foreground_server('/adb', 'serial', 'direct', interactive=False))
+        self.assertEqual(handoff.call_args.args[0][4], '-t')
 
-        with mock.patch.object(setup.subprocess, 'run', side_effect=KeyboardInterrupt):
-            self.assertEqual(setup.run_foreground_server('/adb', 'serial', 'direct', interactive=True), 130)
+    def test_handoff_flushes_streams_and_reports_exec_failure(self):
+        events = []
+
+        class FlushRecorder:
+            def flush(self):
+                events.append(self.name)
+
+        stdout = FlushRecorder()
+        stdout.name = 'stdout'
+        stderr = FlushRecorder()
+        stderr.name = 'stderr'
+
+        def fail_exec(path, argv):
+            events.append('execv')
+            raise OSError('exec denied')
+
+        with mock.patch.object(setup.sys, 'platform', 'darwin'), \
+                mock.patch.object(setup.sys, 'stdout', stdout), \
+                mock.patch.object(setup.sys, 'stderr', stderr), \
+                mock.patch.object(setup.os, 'execv', side_effect=fail_exec) as execv:
+            with self.assertRaisesRegex(setup.SetupError, 'foreground ADB handoff'):
+                setup.handoff_to_adb(['/adb', '-s', 'serial'], 'foreground ADB handoff')
+        self.assertEqual(events, ['stdout', 'stderr', 'execv'])
+        execv.assert_called_once_with('/adb', ['/adb', '-s', 'serial'])
+
+    def test_windows_handoff_waits_and_exits_with_adb_status_without_execv(self):
+        argv = ['/adb.exe', '-s', 'serial', 'shell', '-t', 'sh -c true']
+        for returncode in (0, 7, 130):
+            with self.subTest(returncode=returncode), \
+                    mock.patch.object(setup.sys, 'platform', 'win32'), \
+                    mock.patch.object(setup.sys, 'stdout', mock.Mock()), \
+                    mock.patch.object(setup.sys, 'stderr', mock.Mock()), \
+                    mock.patch.object(
+                        setup.subprocess,
+                        'run',
+                        return_value=Completed(returncode=returncode),
+                    ) as run, \
+                    mock.patch.object(setup.os, 'execv') as execv:
+                with self.assertRaises(SystemExit) as exit_error:
+                    setup.handoff_to_adb(argv, 'Windows ADB handoff')
+            self.assertEqual(exit_error.exception.code, returncode)
+            run.assert_called_once_with(argv, check=False)
+            execv.assert_not_called()
+
+    def test_windows_handoff_reports_adb_startup_failure(self):
+        argv = ['/adb.exe', '-s', 'serial', 'shell', '-t', 'sh -c true']
+        with mock.patch.object(setup.sys, 'platform', 'win32'), \
+                mock.patch.object(setup.sys, 'stdout', mock.Mock()), \
+                mock.patch.object(setup.sys, 'stderr', mock.Mock()), \
+                mock.patch.object(
+                    setup.subprocess,
+                    'run',
+                    side_effect=OSError('adb startup failed'),
+                ) as run, \
+                mock.patch.object(setup.os, 'execv') as execv:
+            with self.assertRaisesRegex(setup.SetupError, 'Windows ADB handoff: adb startup failed'):
+                setup.handoff_to_adb(argv, 'Windows ADB handoff')
+        run.assert_called_once_with(argv, check=False)
+        execv.assert_not_called()
+
+    def test_windows_handoff_maps_ctrl_c_to_status_130_without_execv(self):
+        argv = ['/adb.exe', '-s', 'serial', 'shell', '-t', 'sh -c true']
+        with mock.patch.object(setup.sys, 'platform', 'win32'), \
+                mock.patch.object(setup.sys, 'stdout', mock.Mock()), \
+                mock.patch.object(setup.sys, 'stderr', mock.Mock()), \
+                mock.patch.object(setup.subprocess, 'run', side_effect=KeyboardInterrupt) as run, \
+                mock.patch.object(setup.os, 'execv') as execv:
+            with self.assertRaises(SystemExit) as exit_error:
+                setup.handoff_to_adb(argv, 'Windows ADB handoff')
+        self.assertEqual(exit_error.exception.code, 130)
+        run.assert_called_once_with(argv, check=False)
+        execv.assert_not_called()
 
     def test_existing_server_requires_a_real_version(self):
         with mock.patch.object(setup, 'run_root', return_value=Completed(stdout='17.18.0\n')):
@@ -669,13 +739,17 @@ class InstallAndShellTests(unittest.TestCase):
                 setup.validate_existing_server('/adb', 'serial', 'direct')
 
     def test_device_shell_elevates_before_chdir_and_does_not_start_server(self):
-        with mock.patch.object(setup.subprocess, 'run', return_value=Completed(returncode=7)) as run:
-            self.assertEqual(setup.open_device_shell('/adb', 'serial', 'su-0'), 7)
-        argv = run.call_args.args[0]
-        self.assertEqual(argv[:5], ['/adb', '-s', 'serial', 'shell', '-t'])
-        self.assertIn("su 0 sh -c", argv[-1])
-        self.assertIn('cd /data/local/tmp && exec /system/bin/sh -i', argv[-1])
-        self.assertNotIn('./frida-server', argv[-1])
+        for root_mode, elevation in (('su-c', 'su -c'), ('su-0', 'su 0 sh -c')):
+            with self.subTest(root_mode=root_mode), \
+                    mock.patch.object(setup, 'handoff_to_adb') as handoff:
+                self.assertIsNone(setup.open_device_shell('/adb', 'serial', root_mode))
+            argv = handoff.call_args.args[0]
+            self.assertEqual(argv[:5], ['/adb', '-s', 'serial', 'shell', '-t'])
+            self.assertIn(elevation, argv[-1])
+            self.assertIn('cd /data/local/tmp', argv[-1])
+            self.assertIn('exec /system/bin/sh -i', argv[-1])
+            self.assertNotIn('./frida-server', argv[-1])
+            self.assertEqual(handoff.call_args.args[1], 'Opening interactive Android shell failed')
 
 
 # ---------------------------------------------------------------------------
@@ -693,7 +767,67 @@ class HostSafetyTests(unittest.TestCase):
             distribution.locate_file.return_value = binary
             with mock.patch.object(setup.shutil, 'which', return_value=None), \
                     mock.patch.object(setup.metadata, 'distribution', return_value=distribution):
-                self.assertEqual(setup.resolve_adb(None), str(binary))
+                self.assertEqual(setup.resolve_adb(None), str(binary.resolve()))
+
+    def test_path_adb_wins_without_inspecting_adbutils(self):
+        with mock.patch.object(setup.shutil, 'which', return_value='/path/adb') as which, \
+                mock.patch.object(setup.metadata, 'distribution', side_effect=AssertionError('fallback inspected')):
+            self.assertEqual(setup.resolve_adb(None), '/path/adb')
+        which.assert_called_once_with('adb')
+
+    def test_adbutils_fallback_uses_the_host_appropriate_bundled_binary(self):
+        for platform_name, name in (
+            ('darwin', 'adb'), ('linux', 'adb'), ('win32', 'adb.exe'),
+        ):
+            with self.subTest(platform=platform_name):
+                with tempfile.TemporaryDirectory() as temporary:
+                    binary = Path(temporary) / name
+                    binary.write_bytes(b'test')
+                    if platform_name != 'win32':
+                        binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+                    distribution = mock.Mock()
+                    distribution.locate_file.return_value = binary
+                    with mock.patch.object(setup.sys, 'platform', platform_name), \
+                            mock.patch.object(setup.shutil, 'which', return_value=None), \
+                            mock.patch.object(setup.metadata, 'distribution', return_value=distribution):
+                        self.assertEqual(setup.resolve_adb(None), str(binary.resolve()))
+                    distribution.locate_file.assert_called_once_with(f'adbutils/binaries/{name}')
+
+    def test_missing_adb_reports_the_optional_fallback_install_path(self):
+        with mock.patch.object(setup.shutil, 'which', return_value=None), \
+                mock.patch.object(
+                    setup.metadata,
+                    'distribution',
+                    side_effect=setup.metadata.PackageNotFoundError('adbutils'),
+                ):
+            with self.assertRaisesRegex(setup.SetupError, r'Android Debug Bridge.*requirements-adb\.txt'):
+                setup.resolve_adb(None)
+
+    def test_present_adbutils_without_a_matching_binary_reports_the_install_path(self):
+        distribution = mock.Mock()
+        distribution.locate_file.return_value = Path('/missing/adb')
+        with mock.patch.object(setup.shutil, 'which', return_value=None), \
+                mock.patch.object(setup.metadata, 'distribution', return_value=distribution):
+            with self.assertRaisesRegex(setup.SetupError, r'Android Debug Bridge.*requirements-adb\.txt'):
+                setup.resolve_adb(None)
+        name = 'adb.exe' if setup.sys.platform.startswith('win') else 'adb'
+        distribution.locate_file.assert_called_once_with(f'adbutils/binaries/{name}')
+
+    def test_explicit_adb_path_wins_or_fails_without_fallback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            binary = Path(temporary) / 'custom-adb'
+            binary.write_bytes(b'test')
+            binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+            with mock.patch.object(setup.shutil, 'which') as which, \
+                    mock.patch.object(setup.metadata, 'distribution', side_effect=AssertionError('fallback inspected')):
+                self.assertEqual(setup.resolve_adb(str(binary)), str(binary.resolve()))
+            which.assert_not_called()
+
+            missing = Path(temporary) / 'missing-adb'
+            with mock.patch.object(setup.shutil, 'which', side_effect=AssertionError('fallback inspected')), \
+                    mock.patch.object(setup.metadata, 'distribution', side_effect=AssertionError('fallback inspected')):
+                with self.assertRaisesRegex(setup.SetupError, '--adb path is not an executable file'):
+                    setup.resolve_adb(str(missing))
 
     def test_default_mode_requires_tty_before_any_adb_lookup(self):
         fake_stdin = mock.Mock(isatty=mock.Mock(return_value=False))
@@ -705,6 +839,94 @@ class HostSafetyTests(unittest.TestCase):
                 setup.main([])
         self.assertEqual(exit_error.exception.code, 2)
         resolve.assert_not_called()
+
+    def test_main_requires_an_online_device_before_any_runtime_or_release_work(self):
+        modes = ((), ('--no-shell',), ('--ver', '16.3.3'), ('--shell',))
+        cases = (
+            ('no devices', [], None, 'No online Android device'),
+            (
+                'offline',
+                [setup.AndroidDevice('offline', 'offline', '')],
+                None,
+                'No online Android device',
+            ),
+            (
+                'unauthorized',
+                [setup.AndroidDevice('phone', 'unauthorized', '')],
+                None,
+                'No online Android device',
+            ),
+            (
+                'mixed non-online',
+                [
+                    setup.AndroidDevice('offline', 'offline', ''),
+                    setup.AndroidDevice('phone', 'unauthorized', ''),
+                ],
+                None,
+                'No online Android device',
+            ),
+            (
+                'explicit missing',
+                [setup.AndroidDevice('other', 'device', '')],
+                'missing',
+                'was not reported',
+            ),
+            (
+                'explicit offline',
+                [setup.AndroidDevice('offline', 'offline', '')],
+                'offline',
+                "is 'offline'",
+            ),
+            (
+                'ambiguous multiple',
+                [
+                    setup.AndroidDevice('one', 'device', ''),
+                    setup.AndroidDevice('two', 'device', ''),
+                ],
+                None,
+                'Multiple online Android devices',
+            ),
+        )
+        for case_name, devices, requested, expected_error in cases:
+            for mode in modes:
+                arguments = list(mode)
+                if requested is not None:
+                    arguments.extend(('--device-id', requested))
+                with self.subTest(case=case_name, mode=mode):
+                    with tempfile.TemporaryDirectory() as temporary:
+                        runtime_root = Path(temporary) / 'runtime'
+                        with ExitStack() as stack:
+                            stack.enter_context(mock.patch.object(setup, 'TMP_ROOT', runtime_root))
+                            resolve = stack.enter_context(mock.patch.object(setup, 'resolve_adb', return_value='/adb'))
+                            listing = stack.enter_context(mock.patch.object(setup, 'list_adb_devices', return_value=devices))
+                            target = stack.enter_context(mock.patch.object(setup, 'validate_target'))
+                            root = stack.enter_context(mock.patch.object(setup, 'probe_root'))
+                            artifact = stack.enter_context(mock.patch.object(setup, 'select_server_artifact'))
+                            release = stack.enter_context(mock.patch.object(setup, 'release_for'))
+                            download = stack.enter_context(mock.patch.object(setup, 'download_asset'))
+                            install = stack.enter_context(mock.patch.object(setup, 'install_server'))
+                            prepare = stack.enter_context(mock.patch.object(setup, 'prepare_existing_server'))
+                            validate = stack.enter_context(mock.patch.object(setup, 'validate_existing_server'))
+                            foreground = stack.enter_context(mock.patch.object(setup, 'run_foreground_server'))
+                            shell = stack.enter_context(mock.patch.object(setup, 'open_device_shell'))
+                            warning = stack.enter_context(mock.patch.object(setup, 'warn_frida_version'))
+                            temporary_directory = stack.enter_context(
+                                mock.patch.object(setup.tempfile, 'TemporaryDirectory'),
+                            )
+                            stack.enter_context(mock.patch.object(setup.sys, 'stdin', TtyBuffer()))
+                            stack.enter_context(mock.patch.object(setup.sys, 'stdout', TtyBuffer()))
+                            stderr = stack.enter_context(mock.patch.object(setup.sys, 'stderr', io.StringIO()))
+                            self.assertEqual(setup.main(arguments), 1)
+                        self.assertFalse(runtime_root.exists())
+                    self.assertIn(expected_error, stderr.getvalue())
+                    resolve.assert_called_once_with(None)
+                    listing.assert_called_once_with('/adb')
+                    for operation in (
+                        target, root, artifact, release, download, install,
+                        prepare, validate, foreground, shell, warning,
+                    ):
+                        operation.assert_not_called()
+                    temporary_directory.assert_not_called()
 
     def test_main_stops_on_abi_mismatch_before_release_or_upload(self):
         device = setup.AndroidDevice('serial', 'device', '')
@@ -898,12 +1120,14 @@ class ShellOnlyTests(unittest.TestCase):
             resolve.assert_not_called()
 
     def test_root_shell_starts_in_the_shared_directory_without_frida_command(self):
-        with mock.patch.object(setup.subprocess, 'run', return_value=Completed()) as run:
-            self.assertEqual(setup.open_device_shell('/adb', 'phone', 'direct'), 0)
-        argv = run.call_args.args[0]
+        with mock.patch.object(setup, 'handoff_to_adb') as handoff:
+            self.assertIsNone(setup.open_device_shell('/adb', 'phone', 'direct'))
+        argv = handoff.call_args.args[0]
         self.assertEqual(argv[:5], ['/adb', '-s', 'phone', 'shell', '-t'])
-        self.assertEqual(shlex.split(argv[-1]), ['sh', '-c', 'cd /data/local/tmp && exec /system/bin/sh -i'])
+        self.assertIn('cd /data/local/tmp', argv[-1])
+        self.assertIn('exec /system/bin/sh -i', argv[-1])
         self.assertNotIn('frida-server', argv[-1])
+        self.assertEqual(handoff.call_args.args[1], 'Opening interactive Android shell failed')
 
 
 if __name__ == '__main__':

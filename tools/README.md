@@ -35,6 +35,13 @@ online, rooted Android device or a root-capable emulator, plus ADB on the comput
 It does not root an unrooted device. **Every mode requires root**, including
 `--shell`; if root is unavailable, the helper stops with setup guidance.
 
+Before checking the cache or contacting GitHub, every mode asks `adb devices -l`
+for an online target and requires at least one row whose state is exactly
+`device`. This ADB transport requirement also applies to `--ver`, even when a
+matching archive is already cached; it is not a request to mount or inspect host
+storage. If no eligible row exists, the helper stops before target checks, cache
+work, release lookup, download, installation, or shell handoff.
+
 No virtual environment or additional Python requirements are needed when ADB is
 installed on the system. You can replace `.venv/bin/python` in the examples with
 `python3` (or `py -3` on Windows). Using the dumper's environment lets the helper
@@ -115,24 +122,36 @@ devices, select one explicitly using `--device-id`.
 <details>
 <summary>🧩 Optional ADB through pip</summary>
 
-The [adbutils wheels](https://pypi.org/project/adbutils/) include a native ADB
-binary on supported host platforms. To use one inside the project's virtual
-environment instead of a system installation:
+The optional [adbutils wheels](https://pypi.org/project/adbutils/) provide the
+native ADB executable and its companion files through a third-party Python
+package. They cover the ADB executable needed by this helper; other Android SDK
+tools are installed separately. To add this fallback to the same virtual
+environment used by the helper, from the repository root run:
 
 ```sh
-.venv/bin/python -m pip install --only-binary=adbutils adbutils
+.venv/bin/python -m pip install -r tools/requirements-adb.txt
 ```
 
 On Windows, use `.venv\Scripts\python.exe` instead of `.venv/bin/python`.
-The wheel requirement prevents falling back to a source distribution without a
-bundled executable. Wheel availability depends on the host OS and architecture;
-use Platform-Tools if pip cannot find a compatible wheel.
+The [optional ADB requirements file](requirements-adb.txt) pins the tested
+version and requires a wheel, so pip does not fall back to a source distribution
+without a bundled executable. Published
+wheels currently cover Windows x86/x64, Linux x86_64, and Intel macOS. There is
+no native ARM-host wheel for pinned `adbutils==2.12.0`; use system Android SDK
+Platform-Tools on those hosts.
 
-The helper searches for ADB in this order: an explicit `--adb` path, `adb` on
-`PATH`, then the binary bundled with `adbutils` in the Python environment running
-the helper. It does not install packages automatically. The optional pip package
-is not added to the dumper's regular requirements. It also does not create a
-standalone `adb` shell command; this helper can locate its bundled binary directly.
+By default, the helper searches for `adb` on `PATH` first, then the bundled
+`adb` binary in the helper's Python environment (`adb.exe` on Windows). Pass
+`--adb PATH` when a specific executable must win over both choices; an invalid
+explicit path fails rather than falling back. The helper never installs pip
+packages automatically, and the optional package is not part of the dumper's
+regular requirements. It locates the packaged binary directly and does not
+create a standalone `adb` shell command. Startup prints `Using ADB: ...`, so the
+selected executable path is visible. The `adbutils` package version and the
+version reported by its bundled ADB executable are separate version numbers.
+If neither PATH nor the bundled fallback is available, setup stops before device
+lookup and prints the requirements install command; run it with the same Python
+environment used to invoke the helper.
 
 </details>
 
@@ -203,10 +222,27 @@ The helper verifies the release asset's SHA-256 when GitHub provides one; older
 releases may have no published digest. It pushes a uniquely named temporary file
 to `/data/local/tmp`, sets root ownership and executable permissions, checks its
 `--version`, stops the previous server at the managed path, and renames the
-validated binary to `frida-server`. It then enters `/data/local/tmp` in a root
-terminal session and runs `./frida-server` with inherited terminal input and
-output. The server session has **no startup timeout** and does not use
-`--daemonize`. Startup errors remain visible and unsuccessful exits are reported.
+validated binary to `frida-server`. It then hands the terminal to ADB. ADB
+enters `/data/local/tmp` in a root terminal session and prints a launch line like:
+
+```text
+generic_x86_64:/data/local/tmp # ./frida-server
+```
+
+On macOS and Linux, the host Python process hands the terminal to ADB and is
+replaced before this line appears; Python does not poll or wait around the
+session. On Windows, Python runs ADB with inherited input/output and waits only
+as a minimal status-preserving compatibility shim; ADB still owns the terminal.
+The line is a launch indication, not an idle prompt. The server has **no startup
+timeout** and does not use `--daemonize`, so its output and startup errors remain
+visible while ADB waits for it to exit. In the default mode and `--shell`, press
+**Ctrl+C** in this terminal to stop Frida; the real root prompt appears only
+after Frida exits. Native Windows terminal behavior remains unverified.
+Keep that terminal open and run the dumper from a second host terminal:
+
+```sh
+.venv/bin/python dump_keys.py
+```
 
 Every normal setup run installs and replaces the server, even if the selected
 version is already installed. It reuses a matching cached archive when available,
@@ -214,12 +250,6 @@ as described below. Replacing a running server interrupts active Frida
 sessions. The helper identifies it by the exact executable path under `/proc`,
 sends `SIGTERM`, and waits for it to stop. If it does not stop, setup fails; it
 does not force-kill it or terminate an unrelated process using the same port.
-
-While Frida occupies that terminal, run the dumper in a second host terminal:
-
-```sh
-.venv/bin/python dump_keys.py
-```
 
 When finished, stop Frida with **Ctrl+C** in its terminal. The default flow and
 `--shell` then leave a root prompt in `/data/local/tmp`, where you can check:
@@ -231,7 +261,11 @@ pwd
 ```
 
 Expect `0` and `/data/local/tmp` from the first two commands. Enter `./frida-server`
-at that prompt to start it again manually, or `exit` to return to the host.
+at that prompt to start it again manually. With the direct or `adb root` route,
+one `exit` returns to the host. With `su-c` or `su-0`, the root prompt is nested
+inside the ordinary ADB shell, so the first `exit` returns to that ADB shell and
+the second `exit` returns to the host. `--no-shell` has no follow-up prompt: ADB
+exits with Frida's status when the foreground server stops.
 
 Keep the host Python `frida` version matched to the server version. The helper
 reports a mismatch when it can find the installed package; it does not change
@@ -323,7 +357,11 @@ installed `/data/local/tmp/frida-server` is intentionally retained for use.
 ### Maintainer checks
 
 The focused tests use mocked ADB commands and synthetic release/download data.
-The terminal tests use local fake programs and PTYs; they never contact Android:
+The terminal tests use local fake programs and PTYs; they never contact Android.
+They verify that the POSIX ADB handoff keeps the same process identity, that the
+Windows compatibility handoff preserves ADB status and Ctrl+C, that `su-c` and
+`su-0` need two exits after the root prompt while direct/`adb root` needs one, and
+that setup errors return without opening a follow-up shell:
 
 ```sh
 .venv/bin/python -m unittest discover -s tests -p 'test_frida_setup.py' -v
@@ -334,7 +372,7 @@ The terminal tests use local fake programs and PTYs; they never contact Android:
 | Test module | Coverage |
 | --- | --- |
 | [`test_frida_setup.py`](../tests/test_frida_setup.py) | Device selection, root checks, installation, cache integrity, network failures, and cleanup. |
-| [`test_frida_terminal.py`](../tests/test_frida_terminal.py) | Foreground terminal input/output, Ctrl+C, the remaining shell's directory, and error exit statuses. Skipped on Windows because it uses POSIX PTYs. |
+| [`test_frida_terminal.py`](../tests/test_frida_terminal.py) | ADB handoff in the same process, foreground terminal input/output, Ctrl+C, nested `su-c`/`su-0` exits, the remaining shell's directory, and error exit statuses. Skipped on Windows because it uses POSIX PTYs. |
 | [`test_readme_docs.py`](../tests/test_readme_docs.py) | Local README links, markup, navigation, and command argument tables. |
 
 To include the optional 31-second foreground lifetime test on macOS or Linux:
@@ -350,7 +388,11 @@ The corrected startup and replacement behavior still needs live verification.
 Mocked tests cover these flows, root refusal, startup failures, and selecting only
 the process at the managed executable path. Local POSIX terminal tests also
 exercise Ctrl+C and the following shell for all supported root command forms;
-actual Android shell and root-manager behavior still need device testing.
+the complete foreground Frida lifecycle, other Android/root-manager combinations,
+and disconnected-device behavior still need device testing. A separate shell-only
+`su-0` handoff check on an Android 10 / API 29 emulator verified the root prompt,
+`/data/local/tmp`, and the two-exit return through the ordinary ADB shell; it did
+not exercise Frida foreground startup or replacement.
 
 <details>
 <summary>🧪 Optional live-device checklist</summary>
@@ -358,10 +400,13 @@ actual Android shell and root-manager behavior still need device testing.
 On a test device, verify these paths:
 
 1. Run the default setup command and confirm its reported ABI/architecture. Frida
-   should run in the foreground with live output. Leave it running for more than
-   30 seconds and confirm the dumper connects from a second host terminal.
-   Press Ctrl+C, then check `id -u`, `pwd`, and `./frida-server --version` at the
+   should print its launch indication and run in the foreground with live output.
+   The launch line is not an idle prompt. Leave it running for more than 30
+   seconds and confirm the dumper connects from a second host terminal. Press
+   Ctrl+C, then check `id -u`, `pwd`, and `./frida-server --version` at the
    resulting prompt; expect root, `/data/local/tmp`, and the selected release.
+   With `su-c` or `su-0`, use a second `exit` to close the ordinary ADB shell;
+   direct/`adb root` needs one `exit`.
 2. Re-run setup on an idle test device; confirm the server is replaced and starts
    again. Check that `--no-shell` keeps Frida in the foreground and returns to the
    host only after it stops, without leaving a root prompt.
@@ -378,6 +423,9 @@ On a test device, verify these paths:
    the helper reports using the cache. Verify `--ver` works from that cache with
    the computer offline; default mode should report its failed latest-release
    check and use the newest valid cached version for the detected architecture.
+   Keep an ADB `device` online while making the computer's GitHub/network path
+   unavailable: the cache can avoid release/download traffic, but it cannot
+   bypass the online-device gate.
 
 </details>
 
