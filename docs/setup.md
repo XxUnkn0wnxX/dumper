@@ -209,11 +209,12 @@ Platform-Tools without installing the full Android Studio IDE.
 
 ## Initialize a checkout
 
-The maintained fork uses the `develop` branch. To create a fresh checkout, run
-the following from a directory where you keep source code:
+Use the `main` branch for normal setup; ongoing changes are developed on
+`develop`. To create a fresh checkout, run the following from a directory where
+you keep source code:
 
 ```sh
-git clone --branch develop https://github.com/XxUnkn0wnxX/dumper.git
+git clone --branch main https://github.com/XxUnkn0wnxX/dumper.git
 cd dumper
 ```
 

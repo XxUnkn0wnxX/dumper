@@ -1,12 +1,5 @@
 # 🧩 Dumper
 
-> [!WARNING]
-> **Experimental branch — active rework**
->
-> This branch is experimental and is currently being reworked. Features and
-> behavior may change. See [Android compatibility](#android-compatibility)
-> below for the tested versions and remaining limits.
-
 A Python and Frida tool for capturing Widevine L3 client IDs and matching private
 keys from rooted Android devices. This fork includes Android device selection,
 automatic request-layout detection, browser test-page setup, and maintainer
@@ -61,7 +54,7 @@ The [setup guide](docs/setup.md) has complete checkout and environment commands.
 For a new checkout on macOS or Linux:
 
 ```sh
-git clone --branch develop https://github.com/XxUnkn0wnxX/dumper.git
+git clone --branch main https://github.com/XxUnkn0wnxX/dumper.git
 cd dumper
 python3 init.py
 ```
