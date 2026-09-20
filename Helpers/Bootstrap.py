@@ -27,6 +27,7 @@ import tempfile
 from typing import Iterable, Sequence
 
 from Helpers.CLI import defer_interrupts, ignore_interrupts
+from Helpers.AutoLogging import log_captured_output, run_logged_subprocess
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -154,7 +155,7 @@ def _venv_python(venv: Path) -> Path:
 
 def _command_error(purpose: str, result: subprocess.CompletedProcess) -> BootstrapError:
     detail = ((getattr(result, 'stdout', None) or '') + (getattr(result, 'stderr', None) or '')).strip()
-    if len(detail) > 12000:
+    if len(detail) > 12000 and os.environ.get('DUMPER_AUTO_LOGGING') != '1':
         detail = f'{detail[:12000]}\n... output truncated'
     suffix = f': {detail}' if detail else ''
     return BootstrapError(f'{purpose} failed (exit {result.returncode}){suffix}')
@@ -165,7 +166,7 @@ def _run_command(command: Sequence[str], purpose: str, *, timeout: int,
                  capture_output: bool = True) -> subprocess.CompletedProcess:
     """Run one bounded local command with a concise, contextual failure."""
     try:
-        result = subprocess.run(
+        result = run_logged_subprocess(
             list(command),
             text=True,
             capture_output=capture_output,
@@ -174,11 +175,13 @@ def _run_command(command: Sequence[str], purpose: str, *, timeout: int,
             check=False,
         )
     except subprocess.TimeoutExpired as error:
+        log_captured_output(error)
         raise BootstrapError(
             f'{purpose} timed out after {timeout} seconds. Check the Python environment or network, then retry.'
         ) from error
     except OSError as error:
         raise BootstrapError(f'{purpose} could not start: {error}') from error
+    log_captured_output(result)
     if result.returncode:
         raise _command_error(purpose, result)
     return result

@@ -11,6 +11,7 @@ has one owner:
 | `setup_frida.py` installation, shell mode, cache, arguments, cleanup, and Ctrl+C | [Frida server setup](../docs/frida-setup.md) |
 | `regenerate_protobuf.py`, schema, runtime pin, and provenance | [Protobuf guide](../docs/protobuf.md) |
 | Optional `pywidevine` environment | [WVD tooling](../docs/wvd.md) |
+| Experimental background controller | [Full-auto workflow](../docs/full-auto.md) |
 | Regression commands and verified scope | [Testing guide](../docs/testing.md) |
 
 Run `python3 init.py` first on initial setup (`py -3 init.py` on Windows), from

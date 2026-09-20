@@ -48,6 +48,7 @@ regeneration checks are documented in the [protobuf guide](protobuf.md).
 .venv/bin/python -m unittest tests.test_cli_common tests.test_frida_cancellation -v
 .venv/bin/python -m unittest tests.test_bootstrap tests.test_frida_host_sync -v
 .venv/bin/python -m unittest tests.test_init tests.test_bootstrap_entrypoints -v
+.venv/bin/python -m unittest tests.test_full_auto tests.test_auto_processes tests.test_auto_session tests.test_auto_logging tests.test_auto_init tests.test_auto_frida -v
 ```
 
 Run the JavaScript harness directly when Node.js is installed:
@@ -70,7 +71,7 @@ FRIDA_TEST_LONG_SESSION=1 .venv/bin/python -m unittest discover -s tests -p 'tes
 Compile Python files without running the dumper:
 
 ```sh
-.venv/bin/python -m compileall -q Helpers dump_keys.py tests tools
+.venv/bin/python -m compileall -q Helpers init.py full_auto.py dump_keys.py tests tools
 ```
 
 Check installed dependency versions:
@@ -107,8 +108,8 @@ The suite uses simulated Frida devices to check:
 - Full legacy protobuf schema compatibility, synthetic Protobuf 3.19.3 requests,
   field presence, unknown fields, and certificate/key matching without output files.
 - Output names based on actual client-ID CDM metadata and Android API level, portable
-  folder names, timestamped collisions preserving earlier pairs, and reuse of identical
-  callbacks within one run. Successful-save logs include repository-relative paths.
+  folder names, timestamped collisions preserving earlier pairs, and exactly one
+  verified pair per invocation. Successful-save logs include repository-relative paths.
 - Frida setup device selection, root checks, installation, cache integrity, network
   failures, exact process identity, foreground terminal I/O, Ctrl+C, bounded shutdown,
   nested root-shell exits, error statuses, and cancellation before upload preserving
@@ -121,6 +122,9 @@ The suite uses simulated Frida devices to check:
 - Exact host Frida upgrades/downgrades, selected cache fallback versions, venv and
   pip configuration guards, complete dependency preflight, fresh import checks,
   and failure before Android deployment. Package operations are mocked.
+- Full-auto initialization, API/signature gates, per-run completion events, both-file
+  verification, warning-only playback delay, owned-process cleanup, persistent raw
+  logs, and single-run protection against concurrent log overwrites.
 
 The JavaScript harness executes the actual hook script with simulated Frida APIs.
 It checks both verified signatures, all manual labels, rejection of changed or
@@ -141,6 +145,8 @@ temporary directories. Live device claims below remain separate evidence.
 
 | Area | Evidence | Still needs verification |
 | --- | --- | --- |
+| Python | Current development and regression checks run on Python 3.14.0; tested up to Python 3.14. The stated minimum is Python 3.10. | A complete matrix across every supported Python and host OS version. |
+| Experimental full auto | Offline controller/logging tests and local POSIX process supervision. Existing-venv background initialization and a deliberate missing-ADB failure were checked without contacting a device. | End-to-end Android capture and native Windows lifecycle checks. |
 | Manual capture | Reported success on a rooted Pixel 6 Pro running Android 13 with manual layout `17.0.0`. | Other devices and library builds. |
 | Automatic layout detection | User-confirmed live success on Android 9 / API 28 with plain `python dump_keys.py` (2026-09-20): Android selection, `libwvhidl.so` detection, automatic `args[4]` layout, and key retrieval. Offline checks cover 12 library fixtures from eight Android 9–13 SDK packages, including Android 12L. | Live automatic capture on other Android versions and library builds. |
 | Protobuf | Schema and serialization regressions using synthetic requests from the original Protobuf 3.19.3 binding; updated dumper reported working on Android 9. | Further device coverage and validation after future compiler/runtime updates. |

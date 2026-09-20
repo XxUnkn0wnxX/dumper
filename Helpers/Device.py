@@ -8,6 +8,8 @@ import logging
 import base64
 import re
 import stat
+import hashlib
+import threading
 import time
 from datetime import datetime, timedelta
 
@@ -19,6 +21,10 @@ from Helpers.wv_proto2_pb2 import SignedLicenseRequest
 from Helpers.DeviceSelection import get_android_api_level, select_android_device
 from Helpers.Diagnostics import _run_cancellable
 from Helpers.CLI import defer_interrupts, ignore_interrupts
+from Helpers.AutoSession import AutoSessionError, emit_event
+
+
+_PAIR_SAVE_FALLBACK_LOCK = threading.Lock()
 
 
 # ------------------------------------------------------------------------------
@@ -222,6 +228,9 @@ class Device:
         # Index captured private keys by RSA modulus for later certificate matching.
         self.saved_keys = {}
         self._saved_pair_paths = {}
+        self._pair_save_lock = threading.Lock()
+        self._pair_saved = False
+        self._saved_pair_path = None
         self._first_private_key_at = None
         self._matching_pair_save_attempted = False
         self._no_pair_warning_emitted = False
@@ -249,51 +258,73 @@ class Device:
         client_id_bytes = bytes(client_id_bytes)
         private_key_bytes = bytes(key.export_key(format='PEM'))
 
-        pair_key = (client_id_bytes, private_key_bytes)
-        saved_pair_paths = getattr(self, '_saved_pair_paths', None)
-        if saved_pair_paths is None:
-            saved_pair_paths = self._saved_pair_paths = {}
-        cached_path = saved_pair_paths.get(pair_key)
-        if cached_path and _pair_matches(cached_path, client_id_bytes, private_key_bytes):
-            self.logger.info(
-                'Key pair already saved at %s', _display_output_path(cached_path)
-            )
-            return cached_path
-        if cached_path:
-            saved_pair_paths.pop(pair_key, None)
+        save_lock = getattr(self, '_pair_save_lock', _PAIR_SAVE_FALLBACK_LOCK)
+        with save_lock:
+            if getattr(self, '_pair_saved', False):
+                saved_path = getattr(self, '_saved_pair_path', None)
+                if saved_path:
+                    self.logger.info(
+                        'Key pair already saved at %s', _display_output_path(saved_path)
+                    )
+                return saved_path
 
-        cdm_version = self._client_cdm_version(client_id)
-        device_component = _safe_path_component(self.name)
-        # Budget each value separately so truncating long metadata never removes
-        # the API label. Leave room for the timestamp suffix on all host systems.
-        cdm_component = _safe_path_component(cdm_version, byte_limit=80)
-        api_component = _safe_path_component(
-            getattr(self, 'android_api_level', 'unknown'), byte_limit=24,
-        )
-        base_name = f'CDM {cdm_component} - API {api_component}'
-        root = os.path.abspath(os.fspath(KEY_DUMPS_ROOT))
-        device_root = os.path.join(root, device_component)
-        save_parent = os.path.join(device_root, 'private_keys')
-        try:
-            _ensure_directory(root)
-            _ensure_directory(device_root)
-            _ensure_directory(save_parent)
-            save_dir = _allocate_output_directory(save_parent, base_name, self.logger)
-            _write_exclusive(os.path.join(save_dir, 'client_id.bin'), client_id_bytes)
-            _write_exclusive(os.path.join(save_dir, 'private_key.pem'), private_key_bytes)
-        except (OSError, ValueError) as error:
-            self.logger.warning('Could not save key pair under %s: %s', save_parent, error)
-            return None
+            pair_key = (client_id_bytes, private_key_bytes)
+            saved_pair_paths = getattr(self, '_saved_pair_paths', None)
+            if saved_pair_paths is None:
+                saved_pair_paths = self._saved_pair_paths = {}
 
-        if not _pair_matches(save_dir, client_id_bytes, private_key_bytes):
-            self.logger.warning('Key pair verification failed at %s', save_dir)
-            return None
-        saved_pair_paths[pair_key] = save_dir
-        self.logger.info('Key pairs saved at %s', _display_output_path(save_dir))
-        return save_dir
+            cdm_version = self._client_cdm_version(client_id)
+            device_component = _safe_path_component(self.name)
+            # Budget each value separately so truncating long metadata never removes
+            # the API label. Leave room for the timestamp suffix on all host systems.
+            cdm_component = _safe_path_component(cdm_version, byte_limit=80)
+            api_level = getattr(self, 'android_api_level', 'unknown')
+            api_component = _safe_path_component(api_level, byte_limit=24)
+            base_name = f'CDM {cdm_component} - API {api_component}'
+            root = os.path.abspath(os.fspath(KEY_DUMPS_ROOT))
+            device_root = os.path.join(root, device_component)
+            save_parent = os.path.join(device_root, 'private_keys')
+            try:
+                _ensure_directory(root)
+                _ensure_directory(device_root)
+                _ensure_directory(save_parent)
+                save_dir = _allocate_output_directory(save_parent, base_name, self.logger)
+                _write_exclusive(os.path.join(save_dir, 'client_id.bin'), client_id_bytes)
+                _write_exclusive(os.path.join(save_dir, 'private_key.pem'), private_key_bytes)
+            except (OSError, ValueError) as error:
+                self.logger.warning('Could not save key pair under %s: %s', save_parent, error)
+                return None
+
+            if not _pair_matches(save_dir, client_id_bytes, private_key_bytes):
+                self.logger.warning('Key pair verification failed at %s', save_dir)
+                return None
+
+            # Mark success only after both files have been written and verified.
+            # This is the only point at which a run becomes permanently complete.
+            saved_pair_paths[pair_key] = save_dir
+            self._saved_pair_path = save_dir
+            self._pair_saved = True
+            self.logger.info('Key pairs saved at %s', _display_output_path(save_dir))
+            usb_device = getattr(self, 'usb_device', None)
+            try:
+                emit_event(
+                    'pair_saved',
+                    path=_display_output_path(save_dir),
+                    device_id=getattr(usb_device, 'id', None),
+                    android_api=str(api_level),
+                    client_sha256=hashlib.sha256(client_id_bytes).hexdigest(),
+                    key_sha256=hashlib.sha256(private_key_bytes).hexdigest(),
+                )
+            except AutoSessionError as error:
+                # Frida dispatches this callback on its own thread. Deliver a
+                # failed status channel to the main loop for orderly detachment.
+                self._auto_session_error = error
+            return save_dir
 
     def _has_verified_saved_pair(self):
         """Return whether at least one cached pair still exists on disk."""
+        if getattr(self, '_pair_saved', False):
+            return True
         # Capture callbacks can add pairs while the main thread checks progress.
         for pair_key, path in tuple(getattr(self, '_saved_pair_paths', {}).items()):
             try:
@@ -312,6 +343,9 @@ class Device:
         be pending, or the output operation may already have reported its own
         failure.
         """
+        status_error = getattr(self, '_auto_session_error', None)
+        if status_error is not None:
+            raise status_error
         first_key_at = getattr(self, '_first_private_key_at', None)
         if first_key_at is None:
             return False

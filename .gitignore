@@ -132,6 +132,9 @@ dmypy.json
 license_request.bin
 key_dumps
 
+# Raw, per-session output from full_auto.py
+/logs/
+
 # Downloaded Frida server archives and unpacked binaries
 frida-server
 frida-server-*-android-*

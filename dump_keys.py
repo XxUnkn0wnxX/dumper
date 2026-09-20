@@ -13,6 +13,7 @@ import logging
 import sys
 
 from Helpers.CLI import ignore_interrupts, prepare_terminal
+from Helpers.AutoSession import AutoSessionError, emit_event
 from Helpers.Bootstrap import BootstrapError, bootstrap
 
 # Repair a terminal left in raw mode before importing any Frida/ADB helpers.
@@ -108,6 +109,10 @@ def main():
         '--site-file', default=DEFAULT_SITE_FILE, metavar='PATH',
         help='Read the single test-page URL from this file (default: repo drm_test_site.txt).',
     )
+    parser.add_argument(
+        '--non-interactive', action='store_true',
+        help='Use automatic signature detection for a full-auto capture run.',
+    )
     if DEPENDENCY_IMPORT_INTERRUPTED:
         raise KeyboardInterrupt
     args = parser.parse_args()
@@ -122,6 +127,9 @@ def main():
     dynamic_function_name = args.function_name
     cdm_version = args.cdm_version
     module_names = args.module_name
+    if args.non_interactive and (cdm_version != 'auto' or dynamic_function_name):
+        parser.error('--non-interactive requires --cdm-version auto and no --function-name')
+        return
 
     # Device construction verifies the target OS and prepares the JavaScript agent.
     # Expected setup failures become argparse errors with a nonzero exit status.
@@ -166,6 +174,12 @@ def main():
                 )
             return
         logger.info('Functions hooked; waiting for Widevine playback.')
+        emit_event(
+            'hooks_ready',
+            device_id=device.usb_device.id,
+            android_api=str(device.android_api_level),
+            hooked_libraries=hooked_libraries,
+        )
         # Launch only after a library is ready to capture. Browser setup is optional:
         # its helper reports expected ADB/Chrome errors while capture stays active.
         if args.no_browser:
@@ -217,6 +231,9 @@ def run():
         with ignore_interrupts():
             logging.getLogger('main').info('Stopped by user.')
         return 0
+    except AutoSessionError as error:
+        logging.getLogger('main').error('%s. Capture stopped; saved files are retained.', error)
+        return 1
     except CAPTURE_DISCONNECT_ERRORS as error:
         logging.getLogger('main').warning(
             'Capture stopped for %s (%s): %s. Exiting cleanly; saved files are retained. '

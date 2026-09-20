@@ -21,6 +21,7 @@ tools.
 | 🧬 [Protobuf schema and regeneration](docs/protobuf.md) | Regeneration arguments, runtime pinning, schema provenance, and archive references. |
 | 📦 [Optional WVD tooling](docs/wvd.md) | The separate `.venv-wvd` environment and `pywidevine` requirements. |
 | 🧩 [Dumper operation](docs/dumper.md) | Device selection, browser flags and undo, capture/output behavior, layout detection, and dumper arguments. |
+| 🤖 [Experimental full-auto workflow](docs/full-auto.md) | Background initialization, Frida, and dumper orchestration with four persistent raw logs, ownership boundaries, flags, and current platform scope. |
 | 🧪 [Testing and verified scope](docs/testing.md) | Regression commands, coverage, live evidence, and current Android limits. |
 | 📝 [Planned SDK and helper work](docs/TODO.md) | Android 14–17 module inspection and the deferred WVD helper. |
 | 📦 [Source archives](archives/wks-keys/README.md) | Local WKS-KEYS protobuf snapshots, inventory, and integrity checks. |
@@ -36,7 +37,9 @@ cd dumper
 python3 init.py
 ```
 
-Install Python 3.10 or newer first. **On initial setup, run `init.py` before the
+Install Python 3.10 or newer first. **Tested up to Python 3.14** (current
+development and regression checks use Python 3.14.0).
+**On initial setup, run `init.py` before the
 dumper or tools.** It creates or checks `.venv`, installs the requirements when
 needed, and exits without device work. It uses an already active custom venv
 instead when one is present.
@@ -46,11 +49,16 @@ fallback: outside any venv they prepare and enter `.venv` automatically. An
 already active venv is used as-is; run `init.py` there to prepare or check its
 requirements. Full details are in the [setup guide](docs/setup.md).
 
-Before starting either script, follow the [Android setup guide](docs/android-setup.md)
+For the experimental orchestrated workflow, run `python3 full_auto.py` after
+`init.py` (`py -3 full_auto.py` in Windows PowerShell); see the
+[full-auto guide](docs/full-auto.md) for its device gate and cleanup behavior.
+
+Before starting capture, follow the [Android setup guide](docs/android-setup.md)
 to install ADB and prepare a rooted device or root-capable emulator. Prefer a
 Google APIs image over a stock Google Play Store image. Connect and authorize
 the device, then wait for its unlocked home screen to be fully responsive.
-Run the Frida setup command from the repository root and keep its terminal open:
+For manual operation, run the Frida setup command from the repository root and
+keep its terminal open:
 
 ```sh
 python3 tools/setup_frida.py

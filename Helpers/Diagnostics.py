@@ -9,6 +9,7 @@ from typing import Callable
 import frida
 
 from tools.setup_frida import resolve_adb
+from Helpers.AutoLogging import log_captured_output, run_logged_subprocess
 
 
 DIAGNOSTIC_TIMEOUT = 2.0
@@ -57,7 +58,7 @@ def report_adb_version(logger: logging.Logger):
         return None
 
     try:
-        result = subprocess.run(
+        result = run_logged_subprocess(
             [adb, 'version'],
             text=True,
             capture_output=True,
@@ -65,6 +66,7 @@ def report_adb_version(logger: logging.Logger):
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
+        log_captured_output(error)
         logger.info(
             'Optional ADB client diagnostics unavailable; continuing without ADB version (%s): %s',
             adb,
@@ -72,6 +74,7 @@ def report_adb_version(logger: logging.Logger):
         )
         return None
 
+    log_captured_output(result)
     output = '\n'.join(part for part in (result.stdout or '', result.stderr or '') if part)
     protocol_match = re.search(r'^Android Debug Bridge version\s+(\S+)', output, re.MULTILINE)
     build_match = re.search(r'^Version\s+(\S+)', output, re.MULTILINE)

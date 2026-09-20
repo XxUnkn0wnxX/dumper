@@ -193,6 +193,7 @@ class ReadmeDocumentationTests(unittest.TestCase):
     def test_cli_flags_are_documented_with_examples(self):
         cli_tables = (
             (Path("init.py"), Path("docs/setup.md"), "Automatic environment setup"),
+            (Path("full_auto.py"), Path("docs/full-auto.md"), "Controller arguments"),
             (Path("dump_keys.py"), Path("docs/dumper.md"), "Layout detection and options"),
             (Path("tools/setup_frida.py"), Path("docs/frida-setup.md"), "Frida server setup"),
             (Path("tools/regenerate_protobuf.py"), Path("docs/protobuf.md"), "Protobuf regeneration"),

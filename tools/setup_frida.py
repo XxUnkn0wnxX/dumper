@@ -37,6 +37,8 @@ if __package__ in (None, ''):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from Helpers.CLI import defer_interrupts, ignore_interrupts, prepare_terminal
 from Helpers.Bootstrap import BootstrapError, bootstrap, running_in_virtual_environment
+from Helpers.AutoSession import AutoSessionError, context as auto_context, emit_event, frida_marker
+from Helpers.AutoLogging import log_captured_output, run_logged_subprocess
 
 
 # ------------------------------------------------------------------------------
@@ -125,7 +127,7 @@ def command_output(command: list[str], purpose: str, *, timeout: int = TIMEOUT,
                    capture: bool = True, check: bool = True) -> subprocess.CompletedProcess:
     """Run one local command and turn failures into contextual SetupError values."""
     try:
-        result = subprocess.run(
+        result = run_logged_subprocess(
             command,
             text=True,
             capture_output=capture,
@@ -133,6 +135,7 @@ def command_output(command: list[str], purpose: str, *, timeout: int = TIMEOUT,
             check=False,
         )
     except subprocess.TimeoutExpired as error:
+        log_captured_output(error)
         raise SetupError(
             f'{purpose} timed out after {timeout} seconds. '
             'The Android command did not finish; check the device/ADB connection, '
@@ -140,6 +143,7 @@ def command_output(command: list[str], purpose: str, *, timeout: int = TIMEOUT,
         ) from error
     except OSError as error:
         raise SetupError(f'{purpose}: {error}') from error
+    log_captured_output(result)
     if check and result.returncode:
         detail = ((result.stdout or '') + (result.stderr or '')).strip()
         suffix = f': {detail}' if detail else ''
@@ -150,7 +154,7 @@ def command_output(command: list[str], purpose: str, *, timeout: int = TIMEOUT,
 def host_package_output(command: list[str], purpose: str, *, timeout: int) -> subprocess.CompletedProcess:
     """Run a host Python package command with host-specific failure guidance."""
     try:
-        result = subprocess.run(
+        result = run_logged_subprocess(
             command,
             text=True,
             capture_output=True,
@@ -158,15 +162,17 @@ def host_package_output(command: list[str], purpose: str, *, timeout: int) -> su
             check=False,
         )
     except subprocess.TimeoutExpired as error:
+        log_captured_output(error)
         raise SetupError(
             f'{purpose} timed out after {timeout} seconds. The host Python package operation did not finish; '
             'check the network and Python environment, then retry.'
         ) from error
     except OSError as error:
         raise SetupError(f'{purpose}: could not start the host Python package command: {error}') from error
+    log_captured_output(result)
     if result.returncode:
         detail = ((result.stdout or '') + (result.stderr or '')).strip()
-        if len(detail) > 12000:
+        if len(detail) > 12000 and os.environ.get('DUMPER_AUTO_LOGGING') != '1':
             detail = f'{detail[:12000]}\n... output truncated'
         suffix = f': {detail}' if detail else ''
         raise SetupError(f'{purpose} failed (exit {result.returncode}){suffix}')
@@ -175,6 +181,10 @@ def host_package_output(command: list[str], purpose: str, *, timeout: int) -> su
 
 def resolve_adb(requested: str | None) -> str:
     """Find an explicit ADB executable, PATH ADB, or adbutils' bundled binary."""
+    if requested is None and auto_context() is not None:
+        # Browser/version diagnostics in the dumper use the controller's exact
+        # ADB selection too, including an executable with a custom filename.
+        requested = os.environ.get('DUMPER_AUTO_ADB') or None
     if requested:
         candidate = Path(requested).expanduser()
         has_path_component = os.sep in requested or (os.altsep is not None and os.altsep in requested)
@@ -979,7 +989,7 @@ def supervised_server_command() -> str:
     Only this child, with its original /proc start time, can be force-stopped.
     There is no timer while the server is running normally.
     """
-    return foreground_process_identity_command() + '\n' + r'''
+    command = foreground_process_identity_command() + '\n' + r'''
 frida_pid=
 frida_start=
 frida_ready=0
@@ -1023,6 +1033,19 @@ if test "$frida_interrupted" -eq 1; then
 fi
 trap - INT
 '''.replace('__TIMEOUT__', str(FOREGROUND_STOP_TIMEOUT))
+    marker = frida_marker()
+    if marker is not None:
+        # Full auto owns just this process incarnation. Publish its identity
+        # before readiness so cancellation can stop it without scanning/killing
+        # unrelated servers. Manual sessions do not create a marker.
+        record = (
+            'frida_start=$frida_current_start\n'
+            f'if ! (umask 077; printf "%s %s\\n" "$frida_pid" "$frida_start" > {shlex.quote(marker)}); then\n'
+            '    kill -KILL "$frida_pid" 2>/dev/null; wait "$frida_pid"; exit 1\n'
+            'fi'
+        )
+        command = command.replace('frida_start=$frida_current_start', record)
+    return command
 
 
 def foreground_server_command(interactive: bool, root_mode: str = 'direct') -> str:
@@ -1143,6 +1166,7 @@ def run_foreground_server(adb: str, serial: str, root_mode: str, *, interactive:
     else:
         print('\nStarting Frida in the ADB terminal; no follow-up shell.')
         print(f'Ctrl+C: stop Frida (force-stop after {FOREGROUND_STOP_TIMEOUT}s if needed).')
+    emit_event('frida_launch', device_id=serial, root_mode=root_mode, marker=frida_marker())
     handoff_to_adb(argv, 'Running foreground Frida server failed')
 
 
@@ -1512,7 +1536,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--device-id', '-s', help='ADB serial when more than one Android device is online.')
     parser.add_argument('--adb', help='ADB executable name or absolute/relative path.')
     shell_mode = parser.add_mutually_exclusive_group()
-    shell_mode.add_argument('--no-shell', action='store_true', help='Install and run Frida server in the foreground until it exits.')
+    shell_mode.add_argument('--no-shell', '--non-interactive', action='store_true', help='Install and run Frida server in the foreground until it exits, without a follow-up shell.')
     shell_mode.add_argument('--shell', action='store_true', help='Run the installed Frida server in the foreground, then open a root shell.')
     return parser
 
@@ -1574,7 +1598,7 @@ def _main(argv: list[str] | None = None) -> int:
 
         print(f'Installed: {REMOTE_SERVER}', flush=True)
         return run_foreground_server(adb, device.serial, root_mode, interactive=not args.no_shell)
-    except SetupError as error:
+    except (SetupError, AutoSessionError) as error:
         print(f'error: {error}', file=sys.stderr)
         return 1
     except OSError as error:

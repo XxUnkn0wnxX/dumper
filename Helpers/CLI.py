@@ -6,6 +6,14 @@ import signal
 import sys
 
 
+def _cancellation_signals():
+    """Windows background process groups receive Ctrl+Break, not Ctrl+C."""
+    signals = [signal.SIGINT]
+    if hasattr(signal, 'SIGBREAK'):
+        signals.append(signal.SIGBREAK)
+    return signals
+
+
 def prepare_terminal() -> None:
     """Repair interactive terminal flags left behind by an interrupted ADB shell.
 
@@ -14,6 +22,13 @@ def prepare_terminal() -> None:
     Pipes, redirected files, Windows consoles, and unavailable terminals are
     left alone. ADB may enter raw mode again after the later exec handoff.
     """
+    if hasattr(signal, 'SIGBREAK'):
+        # full_auto targets one new Windows process group with Ctrl+Break.
+        # Translate it into the same KeyboardInterrupt cleanup path as Ctrl+C.
+        try:
+            signal.signal(signal.SIGBREAK, signal.default_int_handler)
+        except (OSError, ValueError):
+            pass
     if os.name != 'posix':
         return
     import termios
@@ -51,14 +66,15 @@ def defer_interrupts():
         nonlocal interrupted
         interrupted = True
 
-    installed = False
-    try:
-        previous = signal.getsignal(signal.SIGINT)
-        if previous != signal.SIG_IGN:
-            signal.signal(signal.SIGINT, remember_interrupt)
-            installed = True
-    except (OSError, ValueError):
-        pass
+    installed = []
+    for signum in _cancellation_signals():
+        try:
+            previous = signal.getsignal(signum)
+            if previous != signal.SIG_IGN:
+                signal.signal(signum, remember_interrupt)
+                installed.append((signum, previous))
+        except (OSError, ValueError):
+            pass
     cleanup_failed = False
     try:
         yield
@@ -66,13 +82,13 @@ def defer_interrupts():
         cleanup_failed = True
         raise
     finally:
-        if installed:
-            signal.signal(signal.SIGINT, previous)
-            # A caller may be handling a recoverable failure and retrying next.
-            # Only an exception from this cleanup body takes precedence; an
-            # ambient handled exception must not hide the user's cancellation.
-            if interrupted and not cleanup_failed:
-                raise KeyboardInterrupt
+        for signum, previous in reversed(installed):
+            signal.signal(signum, previous)
+        # A caller may be handling a recoverable failure and retrying next.
+        # Only an exception from this cleanup body takes precedence; an
+        # ambient handled exception must not hide the user's cancellation.
+        if interrupted and not cleanup_failed:
+            raise KeyboardInterrupt
 
 
 @contextmanager
@@ -82,13 +98,16 @@ def ignore_interrupts():
     Use only while unwinding cancelled work or restoring output files, never
     around normal device, network, compiler, or capture operations.
     """
-    try:
-        previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
-    except (OSError, ValueError):
-        # Signal handlers can only be changed from Python's main thread.
-        yield
-        return
+    installed = []
+    for signum in _cancellation_signals():
+        try:
+            previous = signal.signal(signum, signal.SIG_IGN)
+            installed.append((signum, previous))
+        except (OSError, ValueError):
+            # Signal handlers can only be changed from Python's main thread.
+            pass
     try:
         yield
     finally:
-        signal.signal(signal.SIGINT, previous)
+        for signum, previous in reversed(installed):
+            signal.signal(signum, previous)

@@ -15,6 +15,7 @@ from typing import Iterable
 from urllib.parse import urlsplit
 
 from tools.setup_frida import SetupError, resolve_adb
+from Helpers.AutoLogging import log_captured_output, run_logged_subprocess
 
 
 # ------------------------------------------------------------------------------
@@ -125,7 +126,7 @@ def read_test_site(site_file=DEFAULT_SITE_FILE, logger=None) -> str | None:
 # ------------------------------------------------------------------------------
 def _run_host(command: list[str], purpose: str, *, input_text: str | None = None):
     try:
-        return subprocess.run(
+        result = run_logged_subprocess(
             command,
             input=input_text,
             text=True,
@@ -135,7 +136,10 @@ def _run_host(command: list[str], purpose: str, *, input_text: str | None = None
             shell=False,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
+        log_captured_output(error)
         raise BrowserSetupError(f'{purpose}: {error}') from error
+    log_captured_output(result)
+    return result
 
 
 def _adb_shell(adb: str, serial: str, remote_command: str, purpose: str,

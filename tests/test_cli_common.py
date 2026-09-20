@@ -38,6 +38,15 @@ class CliCommonTests(unittest.TestCase):
                          ('input', 'captured', 'errors'))
         self.assertEqual(tuple(stream.tell() for stream in streams), (0, 0, 0))
 
+    def test_windows_break_uses_the_keyboard_interrupt_cleanup_handler(self):
+        with mock.patch.object(cli_common.signal, 'SIGBREAK', 9876, create=True), \
+                mock.patch.object(cli_common.signal, 'signal') as install, \
+                mock.patch.object(cli_common.sys, 'stdin', io.StringIO()), \
+                mock.patch.object(cli_common.sys, 'stdout', io.StringIO()), \
+                mock.patch.object(cli_common.sys, 'stderr', io.StringIO()):
+            cli_common.prepare_terminal()
+        install.assert_any_call(9876, signal.default_int_handler)
+
     def test_ignore_interrupts_restores_handler_when_cleanup_raises(self):
         previous = signal.getsignal(signal.SIGINT)
         replacement = lambda signum, frame: None

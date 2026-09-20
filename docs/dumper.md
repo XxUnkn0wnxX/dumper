@@ -1,6 +1,6 @@
 # 🧩 Dumper operation
 
-[← Back to the Dumper README](../README.md) · [🧱 Python setup](setup.md) · [🧪 Testing](testing.md)
+[← Back to the Dumper README](../README.md) · [🧱 Python setup](setup.md) · [🤖 Full-auto](full-auto.md) · [🧪 Testing](testing.md)
 
 Run these commands from the repository root. Outside any virtual environment,
 shared startup [prepares and enters `.venv`](setup.md#automatic-environment-setup);
@@ -152,8 +152,10 @@ restoring normal newline handling and `Ctrl+C` signal settings. Redirected
 streams and native Windows consoles are left unchanged.
 
 **Ctrl+C** during startup or capture exits with status `0`, keeps any already
-saved key files, and leaves the existing RSA/key debug output available. The
-cleanup path protects Frida sessions from a repeated interrupt. A device or
+saved key files, and leaves the existing RSA/key debug output available. After
+hooks are ready, a manual run continues waiting for playback and later
+callbacks even after its first pair is saved; press Ctrl+C to finish the run.
+The cleanup path protects Frida sessions from a repeated interrupt. A device or
 Frida disconnect exits status `1` with saved output retained. Native Windows
 terminal behavior and physical-device capture remain subject to the live scope
 in the [testing guide](testing.md#verified-scope).
@@ -188,8 +190,12 @@ macOS, and Linux, so the separator is `-` instead of the Windows-invalid `|`.
 If the destination already exists, the new pair goes into a sibling folder with
 the computer's local date and time, for example
 `CDM 14.0.0 - API 28 (2026-09-20 15-45-30)`. Same-time collisions receive a more
-precise timestamp. Existing pairs are preserved, and repeated identical
-callbacks within one dumper run reuse that run's saved folder.
+precise timestamp. Existing pairs are preserved. Each dumper invocation saves
+at most one newly verified pair: later matching callbacks reuse/report that
+invocation's saved folder and do not create another directory. A failed or
+incomplete write does not count as success and may be retried. Success is
+recorded only after both files are closed and their contents have been read
+back and verified.
 
 After both files are saved and verified, the log prints the exact directory
 relative to the repository root:
@@ -234,6 +240,11 @@ to open the configured test page after hooks are ready.
 | `--module-name NAME [NAME ...]` | Search one or more named Widevine libraries. | `libwvaidl.so libwvhidl.so` | `python dump_keys.py --module-name libwvhidl.so libwvaidl.so` |
 | `--no-browser` | Capture without configuring or opening Chrome through ADB. | Browser launch enabled. | `python dump_keys.py --no-browser` |
 | `--site-file PATH` | Read the single active HTTPS test-page URL from a different text file. | Repository `drm_test_site.txt` | `python dump_keys.py --site-file my_test_site.txt` |
+| `--non-interactive` | Strict automatic mode for the full-auto controller. Requires `--cdm-version auto` and no `--function-name`; it does not enable manual layout or function overrides. | Off | `python dump_keys.py --non-interactive` |
+
+The full-auto controller uses `--non-interactive` after Frida startup has been
+verified. Manual `--cdm-version` and `--function-name` remain available for
+advanced direct dumper runs and are outside that workflow's coverage.
 
 <details>
 <summary>🔎 Manual layouts and library overrides</summary>

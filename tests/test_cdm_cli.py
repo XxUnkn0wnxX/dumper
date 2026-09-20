@@ -187,14 +187,17 @@ class CdmCommandLineTests(unittest.TestCase):
         frida_patch = mock.patch.object(dump_keys, 'report_frida_versions')
         browser_patch = mock.patch.object(dump_keys, 'launch_test_page', return_value=True)
         connection_patch = mock.patch.object(dump_keys, 'CaptureConnection')
+        event_patch = mock.patch.object(dump_keys, 'emit_event')
         self.addCleanup(adb_patch.stop)
         self.addCleanup(frida_patch.stop)
         self.addCleanup(browser_patch.stop)
         self.addCleanup(connection_patch.stop)
+        self.addCleanup(event_patch.stop)
         self.adb_report = adb_patch.start()
         self.frida_report = frida_patch.start()
         self.browser_launch = browser_patch.start()
         self.connection_class = connection_patch.start()
+        self.emit_event = event_patch.start()
 
     def make_cli_device(self, processes=(), libraries=()):
         # Materialize supplied iterables as predictable process and library
@@ -281,6 +284,52 @@ class CdmCommandLineTests(unittest.TestCase):
 
         self.assertEqual(exit_error.exception.code, 2)
         device_class.assert_not_called()
+
+    def test_noninteractive_requires_auto_layout_and_no_function_name(self):
+        for extra_args in (
+            ['--non-interactive', '--cdm-version', '17.0.0'],
+            ['--non-interactive', '--function-name', 'PrepareKeyRequest'],
+        ):
+            with self.subTest(extra_args=extra_args), \
+                    mock.patch.object(sys, 'argv', ['dump_keys.py', *extra_args]), \
+                    mock.patch.object(dump_keys, 'Device') as device_class, \
+                    mock.patch('argparse.ArgumentParser.error', side_effect=SystemExit(2)) as parser_error:
+                with self.assertRaises(SystemExit) as exit_error:
+                    dump_keys.main()
+
+            self.assertEqual(exit_error.exception.code, 2)
+            self.assertIn('--non-interactive requires', parser_error.call_args.args[0])
+            device_class.assert_not_called()
+
+    def test_noninteractive_emits_hooks_ready_before_browser(self):
+        process = SimpleNamespace(name='drm_process')
+        device = self.make_cli_device([process], ['libwvhidl.so'])
+        device.android_api_level = 29
+        calls = []
+        self.emit_event.side_effect = lambda *args, **kwargs: calls.append(('event', args, kwargs))
+        self.browser_launch.side_effect = lambda *args, **kwargs: calls.append(('browser', args, kwargs))
+
+        self.run_cli(['--non-interactive'], device)
+
+        self.assertEqual(calls[0], (
+            'event', ('hooks_ready',), {
+                'device_id': 'android-1', 'android_api': '29', 'hooked_libraries': 1,
+            },
+        ))
+        self.assertEqual(calls[1][0], 'browser')
+
+    def test_failed_hook_does_not_emit_hooks_ready(self):
+        process = SimpleNamespace(name='drm_process')
+        device = self.make_cli_device([process], ['libwvhidl.so'])
+        device.hook_to_process.side_effect = HookError('unknown signature')
+
+        with mock.patch.object(sys, 'argv', ['dump_keys.py']), \
+                mock.patch.object(dump_keys, 'Device', return_value=device), \
+                mock.patch('argparse.ArgumentParser.error', side_effect=SystemExit(2)):
+            with self.assertRaises(SystemExit):
+                dump_keys.main()
+
+        self.emit_event.assert_not_called()
 
     # CLI failures use argparse's clean error path and suppress a success
     # banner whenever no library completed successfully.
@@ -523,6 +572,17 @@ class CdmCommandLineTests(unittest.TestCase):
         device.hook_to_process.assert_called_once()
         device.close.assert_called_once_with()
         self.connection_class.assert_not_called()
+
+    def test_failed_automatic_status_stops_cleanly_and_closes_capture(self):
+        device = mock.Mock()
+        device.warn_if_no_pair.side_effect = dump_keys.AutoSessionError('status unavailable')
+        with mock.patch.object(dump_keys, 'main', return_value=device), \
+                mock.patch.object(dump_keys.time, 'sleep'), \
+                self.assertLogs('main', level='ERROR') as logs:
+            self.assertEqual(dump_keys.run(), 1)
+        self.assertIn('saved files are retained', ' '.join(logs.output))
+        self.connection_class.return_value.close.assert_called_once_with()
+        device.close.assert_called_once_with()
 
     def test_run_propagates_real_errors(self):
         with mock.patch.object(dump_keys, 'main', side_effect=RuntimeError('startup failed')):

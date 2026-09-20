@@ -8,6 +8,9 @@ The [Android setup guide](android-setup.md) owns Platform-Tools, emulator/root
 images, and device authorization; the [Frida setup guide](frida-setup.md) owns
 the server helper.
 
+Normal use has no compilation step. The repository includes the generated
+protobuf module; `protoc` is only needed for optional [maintainer regeneration](protobuf.md).
+
 ## Initialize a checkout
 
 The maintained fork uses the `develop` branch. To create a fresh checkout, run
@@ -26,7 +29,7 @@ the guides assume that root, where `dump_keys.py`, `requirements.txt`, and
 
 | Component | Requirement |
 | --- | --- |
-| Python | [Python 3.10 or newer](https://www.python.org/downloads/) on the computer. |
+| Python | [Python 3.10 or newer](https://www.python.org/downloads/) on the computer. Tested up to Python 3.14; current development and regression checks use Python 3.14.0. |
 | Android | A rooted device or root-capable emulator with USB debugging enabled. See [Android setup](android-setup.md). |
 | ADB | Android SDK Platform-Tools installed globally and available on `PATH` when possible. The root requirements also install the pinned `adbutils` wheel on supported hosts as a bundled fallback; see [ADB resolution](android-setup.md#adb-resolution). |
 | Frida | A running Android `frida-server` with root access and a version matching the host's Python `frida` package. See [Frida setup](frida-setup.md). |
@@ -53,7 +56,7 @@ python3 init.py
 On Windows, run `py -3 init.py`. You can rerun this command whenever you want
 to check or repair the selected environment's main requirements.
 
-The dumper and both Python tools share
+The dumper, `full_auto.py`, and both Python tools share
 [`Helpers/Bootstrap.py`](../Helpers/Bootstrap.py) with `init.py`. As a fallback
 for a skipped initialization step, when started **outside a
 virtual environment**, they create or reuse the repository's `.venv`, install

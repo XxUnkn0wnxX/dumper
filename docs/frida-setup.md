@@ -1,6 +1,6 @@
 # 🧰 Frida server setup
 
-[← Back to the Dumper README](../README.md) · [🧱 Python setup](setup.md) · [📱 Android setup](android-setup.md) · [🧪 Testing](testing.md)
+[← Back to the Dumper README](../README.md) · [🧱 Python setup](setup.md) · [📱 Android setup](android-setup.md) · [🤖 Full-auto](full-auto.md) · [🧪 Testing](testing.md)
 
 [`tools/setup_frida.py`](../tools/setup_frida.py) downloads an Android Frida
 server from the official [Frida releases](https://github.com/frida/frida/releases),
@@ -76,6 +76,7 @@ python tools\setup_frida.py --ver 16.3.3 --device-id emulator-5554 --adb "C:\And
 | `--device-id SERIAL`, `-s SERIAL` | Select an online ADB device explicitly. | The only online `device` entry | `python tools/setup_frida.py --device-id emulator-5554` |
 | `--adb PATH` | Use a specific `adb` or `adb.exe` executable. | `adb` on `PATH`, then an `adbutils` bundled binary | `python tools/setup_frida.py --adb /opt/android/platform-tools/adb` |
 | `--no-shell` | Replace and run Frida in the foreground, then return to the host when it stops, without a subsequent interactive root prompt. Mutually exclusive with `--shell`. | Off; the default flow leaves a root prompt after Frida stops | `python tools/setup_frida.py --no-shell` |
+| `--non-interactive` | Alias for `--no-shell`; run the foreground server without a follow-up interactive root prompt. Intended for the full-auto controller. | Off | `python tools/setup_frida.py --non-interactive` |
 | `--shell` | Run the installed server in the foreground, or just open `/data/local/tmp` if absent. Synchronizes the host package before restarting an existing managed server. Requires root; never downloads or replaces the Android server. Mutually exclusive with `--no-shell`, `--ver`, and a manual (non-`auto`) `--arch`. | Off | `python tools/setup_frida.py --shell` |
 
 The helper first checks whether the ADB shell is already root. Otherwise it tries
@@ -182,8 +183,10 @@ pwd
 Expect `0` and `/data/local/tmp` from the first two commands. With direct or
 `adb root`, one `exit` returns to the host. With `su-c` or `su-0`, the first
 `exit` returns to the ordinary ADB shell and the second returns to the host.
-`--no-shell` has no follow-up prompt: ADB exits with Frida's status, or status
-`130` if its Ctrl+C fallback had to force-stop it.
+`--no-shell` and its `--non-interactive` alias have no follow-up prompt: ADB
+exits with Frida's status, or status `130` if its Ctrl+C fallback had to
+force-stop it. The full-auto controller uses this mode only after it has
+verified Frida startup, then launches its dumper worker.
 
 ## Reuse the installed server and open a shell
 

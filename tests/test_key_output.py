@@ -1,6 +1,7 @@
 """Focused tests for metadata-labelled, collision-safe key output."""
 
 import importlib
+import hashlib
 import logging
 import os
 from datetime import datetime as real_datetime
@@ -54,6 +55,7 @@ class KeyOutputTests(unittest.TestCase):
         device.logger = logging.getLogger('test.key_output')
         device.name = name
         device.android_api_level = api_level
+        device.usb_device = mock.Mock(id='android-1')
         device._saved_pair_paths = {}
         return device
 
@@ -71,7 +73,7 @@ class KeyOutputTests(unittest.TestCase):
         # A layout argument such as --cdm-version is not present on this output
         # object and cannot override the version embedded in ClientInfo.
         device.cdm_version = '14.0.0'
-        second = Path(device.export_key(self.key, self.client('16.0.0')))
+        second = Path(self.device().export_key(self.key, self.client('16.0.0')))
         self.assertIn('CDM 16.0.0 - API 28', second.name)
 
     def test_success_log_uses_repository_relative_timestamped_path(self):
@@ -114,12 +116,11 @@ class KeyOutputTests(unittest.TestCase):
         first = Path(device.export_key(self.key, first_client))
         second = Path(device.export_key(self.other_key, first_client))
 
-        self.assertNotEqual(first, second)
-        self.assertIn('CDM 14.0.0 - API 28', second.name)
+        self.assertEqual(first, second)
         self.assertEqual(first.joinpath('private_key.pem').read_bytes(), self.key.export_key())
-        self.assertEqual(second.joinpath('private_key.pem').read_bytes(), self.other_key.export_key())
+        self.assertEqual(len(list(first.parent.iterdir())), 1)
 
-    def test_modified_cached_pair_is_preserved_and_saved_again(self):
+    def test_modified_cached_pair_is_not_replaced_within_one_run(self):
         client_id = self.client('14.0.0')
         device = self.device()
         first = Path(device.export_key(self.key, client_id))
@@ -127,24 +128,52 @@ class KeyOutputTests(unittest.TestCase):
 
         second = Path(device.export_key(self.key, client_id))
 
-        self.assertNotEqual(first, second)
+        self.assertEqual(first, second)
         self.assertEqual((first / 'private_key.pem').read_bytes(), b'changed')
-        self.assertEqual((second / 'private_key.pem').read_bytes(), self.key.export_key())
+
+    def test_first_verified_pair_emits_metadata_once_and_ignores_later_pair(self):
+        client_id = self.client('14.0.0')
+        device = self.device()
+        with mock.patch.object(device_module, 'emit_event') as emit:
+            first = Path(device.export_key(self.key, client_id))
+            second = device.export_key(self.other_key, self.client('15.0.0'))
+
+        self.assertEqual(first, Path(second))
+        emit.assert_called_once_with(
+            'pair_saved',
+            path=device_module._display_output_path(first),
+            device_id='android-1',
+            android_api='28',
+            client_sha256=hashlib.sha256(client_id.SerializeToString()).hexdigest(),
+            key_sha256=hashlib.sha256(self.key.export_key()).hexdigest(),
+        )
 
     def test_write_failure_does_not_cache_incomplete_pair(self):
         client_id = self.client('14.0.0')
         device = self.device()
-        with self.assertLogs('test.key_output', level='INFO') as logs:
+        with self.assertLogs('test.key_output', level='INFO') as logs, \
+                mock.patch.object(device_module, 'emit_event') as emit:
             with mock.patch.object(
                 device_module, '_write_exclusive', side_effect=[None, OSError('write failed')]
             ):
                 self.assertIsNone(device.export_key(self.key, client_id))
+            emit.assert_not_called()
 
         self.assertFalse(any('Key pairs saved at' in line for line in logs.output))
 
         output = Path(device.export_key(self.key, client_id))
         self.assertEqual((output / 'client_id.bin').read_bytes(), client_id.SerializeToString())
         self.assertEqual((output / 'private_key.pem').read_bytes(), self.key.export_key())
+
+    def test_status_failure_preserves_complete_pair_and_stops_capture_loop(self):
+        device = self.device()
+        client_id = self.client('14.0.0')
+        with mock.patch.object(device_module, 'emit_event', side_effect=device_module.AutoSessionError('status unavailable')):
+            path = Path(device.export_key(self.key, client_id))
+        self.assertEqual((path / 'client_id.bin').read_bytes(), client_id.SerializeToString())
+        self.assertEqual((path / 'private_key.pem').read_bytes(), self.key.export_key())
+        with self.assertRaisesRegex(device_module.AutoSessionError, 'status unavailable'):
+            device.warn_if_no_pair()
 
     def test_incomplete_existing_base_is_preserved(self):
         base = self.root / 'Pixel 8' / 'private_keys' / 'CDM 14.0.0 - API 28'

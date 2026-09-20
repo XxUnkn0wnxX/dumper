@@ -16,3 +16,7 @@ Shared Python CLI support also lives here:
 | --- | --- | --- |
 | [`Bootstrap.py`](Bootstrap.py) | Initialize and enter the project venv when a CLI is launched outside any venv. | [Python setup](../docs/setup.md#automatic-environment-setup) |
 | [`CLI.py`](CLI.py) | Repair terminal flags and protect cancellation cleanup. | [Cancellation behavior](../docs/frida-setup.md#cancellation-and-cleanup) |
+| [`AutoInit.py`](AutoInit.py) | Run shared initialization in full auto's background initialization stage. | [Full auto](../docs/full-auto.md) |
+| [`AutoProcesses.py`](AutoProcesses.py) | Own and stop background child processes, including Windows Job Objects. | [Full auto](../docs/full-auto.md) |
+| [`AutoSession.py`](AutoSession.py) | Pass per-run readiness and verified-pair metadata to the controller. | [Full auto](../docs/full-auto.md) |
+| [`AutoLogging.py`](AutoLogging.py) | Preserve full raw logs, mirror the controller, and prevent concurrent log overwrites. | [Full auto](../docs/full-auto.md) |
