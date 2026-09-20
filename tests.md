@@ -108,6 +108,10 @@ The suite uses simulated Frida devices to check:
 - Preserving the full legacy protobuf schema and parsing synthetic requests
   serialized with the original Protobuf 3.19.3 binding, including field presence,
   unknown fields, and certificate/key matching without writing output files.
+- Output names based on actual client-ID CDM metadata and Android API level,
+  portable folder names, timestamped collisions that preserve earlier pairs,
+  and reuse of identical callbacks within one run, using synthetic output in
+  temporary directories.
 
 The JavaScript harness executes the actual hook script with simulated Frida APIs.
 It checks both verified signatures, all manual labels, rejection of changed or
@@ -122,6 +126,9 @@ each sample and rejects altered signatures and conflicting recognized layouts.
 Neither SDK images nor library binaries are needed to run the tests.
 
 No connected device, running Frida server, or ADB connection is required.
-The tests do not access real devices or produce key dumps. Live device discovery,
-key extraction, automatic signature detection, and compatibility with a new
-Widevine library still require separate verification on the target device.
+The tests do not access real devices; output tests write only synthetic pairs in
+temporary directories. Separately, the user
+confirmed Android 9 / API 28 operation with automatic device and layout selection
+on 2026-09-20; see [verified scope](README.md#verified-scope). Other devices and
+new Widevine builds require their own live verification. The new Frida helper
+startup/replacement flows also need the [live-device checks](tools/README.md#cleanup-and-maintainer-checks).

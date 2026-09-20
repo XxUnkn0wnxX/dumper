@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Download, validate, and install a Frida server without starting it.
+"""Install and start Frida server on a rooted Android device.
 
-The tool deliberately limits itself to the server lifecycle: it selects one
-online Android target, checks that its ABI and root access are suitable, then
-places a verified server at /data/local/tmp/frida-server.  The interactive
-shell it opens afterwards is for the operator to start the server manually.
+Normal setup selects one online target, validates its ABI and root access,
+replaces /data/local/tmp/frida-server, and starts it in the background. Use
+--shell to start or reuse an existing installation, or just open the directory
+if no server is installed. Both modes open a root shell; --no-shell makes
+normal setup return to the host terminal after starting the server.
 """
 
 import argparse
@@ -23,6 +24,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from typing import Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
@@ -44,6 +46,8 @@ REMOTE_SERVER = f'{REMOTE_DIRECTORY}/frida-server'
 DOWNLOAD_LIMIT = 256 * 1024 * 1024
 UNPACKED_LIMIT = 512 * 1024 * 1024
 TIMEOUT = 30
+STOP_TIMEOUT = 10
+STOP_INTERVAL = 0.25
 VERSION_PATTERN = re.compile(r'v?(\d+\.\d+\.\d+)\Z')
 
 ARCHITECTURES = {
@@ -236,7 +240,7 @@ def validate_target(adb: str, serial: str, architecture: str) -> tuple[int, str,
 
 def root_command(mode: str, command: str) -> list[str]:
     """Wrap a remote script as one Android shell argument, with optional elevation."""
-    if mode in ('direct', 'normal'):
+    if mode == 'direct':
         remote = shlex.join(['sh', '-c', command])
     elif mode == 'su-c':
         remote = shlex.join(['su', '-c', command])
@@ -258,8 +262,8 @@ def probe_existing_root(adb: str, serial: str) -> str | None:
                 purpose=f'Checking root access ({mode})', check=False,
             )
         except SetupError:
-            # Shell-only mode treats a failed optional probe as unavailable;
-            # opening a normal adb shell remains useful on non-rooted targets.
+            # Keep probing other existing mechanisms. The caller either asks
+            # adb root next or reports that root is required for this workflow.
             continue
         if result.returncode == 0 and (result.stdout or '').strip() == '0':
             return mode
@@ -267,7 +271,7 @@ def probe_existing_root(adb: str, serial: str) -> str | None:
 
 
 def probe_root(adb: str, serial: str) -> str:
-    """Require root for installation, falling back to ``adb root`` when supported."""
+    """Require root for setup or shell access, trying ``adb root`` when supported."""
     existing = probe_existing_root(adb, serial)
     if existing:
         return existing
@@ -283,8 +287,10 @@ def probe_root(adb: str, serial: str) -> str:
         if result.returncode == 0 and (result.stdout or '').strip() == '0':
             return 'direct'
     raise SetupError(
-        'Root access is required to install Frida server in /data/local/tmp. '
-        'Use a rooted device/emulator with su, or an image that supports adb root.'
+        'Root access is required to manage Frida server in /data/local/tmp and open its shell. '
+        'For emulators, use a Google APIs debug image with ro.debuggable=1 (userdebug/eng) '
+        'that supports adb root; Play Store production images are not suitable. '
+        'For physical devices, use a rooted build with a working su command.'
     )
 
 
@@ -436,16 +442,162 @@ def validate_elf(server: Path, architecture: str) -> None:
 # ANDROID INSTALLATION AND OPTIONAL OPERATOR SHELL
 # The unique staging name means a failed upload cannot damage a previous working
 # /data/local/tmp/frida-server.  Only a verified staging binary is moved into
-# place, and the script never executes it without the --version argument.
+# place.  Process management is deliberately limited to executables whose
+# /proc/PID/exe identity is the exact managed server path.
 # ------------------------------------------------------------------------------
 def remote_quote(*parts: str) -> str:
     """Build one remote sh command while preserving each literal path as an atom."""
     return shlex.join(list(parts))
 
 
+def managed_server_pids(adb: str, serial: str, root_mode: str,
+                        *, include_deleted: bool = True) -> list[str]:
+    """Return process IDs using the managed path, optionally including deleted maps."""
+    managed = shlex.quote(REMOTE_SERVER)
+    deleted = shlex.quote(f'{REMOTE_SERVER} (deleted)')
+    patterns = f'{managed}|{deleted}' if include_deleted else managed
+    command = (
+        'for process in /proc/[0-9]*; do '
+        'pid=${process#/proc/}; '
+        'target=$(readlink "$process/exe" 2>/dev/null) || continue; '
+        f'case "$target" in {patterns}) printf "%s\\n" "$pid";; esac; '
+        'done'
+    )
+    result = run_root(adb, serial, root_mode, command, 'Finding managed Frida server processes')
+    pids = []
+    for value in (result.stdout or '').split():
+        if not re.fullmatch(r'[0-9]+', value) or int(value) <= 1:
+            raise SetupError(f'Android returned an invalid managed Frida process ID: {value!r}.')
+        pids.append(value)
+    return sorted(set(pids), key=int)
+
+
+def managed_server_absent_command() -> str:
+    """Return a remote script which fails if any managed current/deleted daemon exists."""
+    managed = shlex.quote(REMOTE_SERVER)
+    deleted = shlex.quote(f'{REMOTE_SERVER} (deleted)')
+    return (
+        'for process in /proc/[0-9]*; do '
+        'target=$(readlink "$process/exe" 2>/dev/null) || continue; '
+        f'case "$target" in {managed}|{deleted}) exit 1;; esac; '
+        'done'
+    )
+
+
+def terminate_managed_pid(adb: str, serial: str, root_mode: str, pid: str) -> None:
+    """Recheck a PID's executable immediately before sending it SIGTERM."""
+    if not re.fullmatch(r'[0-9]+', pid) or int(pid) <= 1:
+        raise SetupError(f'Refusing to signal invalid process ID: {pid!r}.')
+    managed = shlex.quote(REMOTE_SERVER)
+    deleted = shlex.quote(f'{REMOTE_SERVER} (deleted)')
+    process_exe = shlex.quote(f'/proc/{pid}/exe')
+    command = (
+        f'target=$(readlink {process_exe} 2>/dev/null) || exit 0; '
+        f'case "$target" in {managed}|{deleted}) kill -TERM {pid};; esac'
+    )
+    run_root(adb, serial, root_mode, command, f'Stopping managed Frida server process {pid}')
+
+
+def stop_managed_servers(adb: str, serial: str, root_mode: str,
+                         *, timeout: float = STOP_TIMEOUT) -> None:
+    """Gracefully stop exact managed-server processes without force killing them."""
+    pids = managed_server_pids(adb, serial, root_mode)
+    for pid in pids:
+        terminate_managed_pid(adb, serial, root_mode, pid)
+    if not pids:
+        return
+
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = managed_server_pids(adb, serial, root_mode)
+        if not remaining:
+            return
+        if time.monotonic() >= deadline:
+            raise SetupError(
+                'Managed Frida server did not stop after SIGTERM '
+                f'(remaining PID(s): {", ".join(remaining)}); destination was not replaced.'
+            )
+        time.sleep(STOP_INTERVAL)
+
+
+def existing_server_state(adb: str, serial: str, root_mode: str) -> str:
+    """Classify the managed path without following a symlink or executing it."""
+    path = shlex.quote(REMOTE_SERVER)
+    command = (
+        f'if test -L {path}; then printf symlink; '
+        f'elif test -d {path}; then printf directory; '
+        f'elif test -f {path}; then '
+        f'if test -x {path}; then printf executable; else printf non-executable; fi; '
+        f'elif test -e {path}; then printf special; else printf missing; fi'
+    )
+    result = run_root(adb, serial, root_mode, command, 'Inspecting managed Frida server')
+    state = (result.stdout or '').strip()
+    if state not in {'missing', 'symlink', 'directory', 'non-executable', 'executable', 'special'}:
+        raise SetupError(f'Android returned an unknown managed Frida server state: {state!r}.')
+    return state
+
+
+def validate_existing_server(adb: str, serial: str, root_mode: str) -> str:
+    """Verify that an existing executable reports a normal Frida X.Y.Z version."""
+    result = run_root(
+        adb, serial, root_mode, remote_quote(REMOTE_SERVER, '--version'),
+        'Validating existing Frida server',
+    )
+    version = (result.stdout or '').strip()
+    try:
+        return normalize_version(version)
+    except SetupError as error:
+        raise SetupError(f'Existing managed Frida server returned an invalid version: {version!r}.') from error
+
+
+def launch_server(adb: str, serial: str, root_mode: str) -> list[str]:
+    """Start the server and require a current-path process with no stale deleted peer."""
+    preexisting = managed_server_pids(adb, serial, root_mode)
+    if preexisting:
+        raise SetupError(
+            'A managed Frida server process appeared before launch '
+            f'(PID(s): {", ".join(preexisting)}); refuse to start a duplicate daemon.'
+        )
+    run_root(
+        adb, serial, root_mode, remote_quote(REMOTE_SERVER, '--daemonize'),
+        'Starting managed Frida server',
+    )
+    all_pids = managed_server_pids(adb, serial, root_mode)
+    current_pids = managed_server_pids(adb, serial, root_mode, include_deleted=False)
+    if not current_pids:
+        raise SetupError('Frida server --daemonize returned successfully but no managed server process is running.')
+    if set(all_pids) != set(current_pids):
+        raise SetupError(
+            'Frida server started, but a stale managed deleted executable is still running; '
+            'refuse to report an updated daemon.'
+        )
+    return current_pids
+
+
+def use_existing_server(adb: str, serial: str, root_mode: str) -> tuple[str, list[str] | None]:
+    """Reuse a running server or start one existing valid server for ``--shell``."""
+    pids = managed_server_pids(adb, serial, root_mode)
+    if pids:
+        return 'reused', pids
+
+    state = existing_server_state(adb, serial, root_mode)
+    if state == 'missing':
+        return 'missing', None
+    if state == 'symlink':
+        raise SetupError(f'{REMOTE_SERVER} is a symlink; refuse to execute it.')
+    if state == 'directory':
+        raise SetupError(f'{REMOTE_SERVER} is a directory; remove or rename it before starting Frida.')
+    if state == 'non-executable':
+        raise SetupError(f'{REMOTE_SERVER} is not executable; reinstall Frida server or fix its permissions.')
+    if state == 'special':
+        raise SetupError(f'{REMOTE_SERVER} is not a regular executable file; refuse to execute it.')
+    validate_existing_server(adb, serial, root_mode)
+    return 'started', launch_server(adb, serial, root_mode)
+
+
 def install_server(adb: str, serial: str, root_mode: str, server: Path,
                    version: str, *, staging_name: str | None = None) -> None:
-    """Push and atomically publish a validated server without launching it."""
+    """Verify a staged candidate, stop only managed processes, then replace atomically."""
     staging = staging_name or f'{REMOTE_DIRECTORY}/.frida-server-{uuid.uuid4().hex}'
     cleanup_needed = False
     try:
@@ -463,9 +615,29 @@ def install_server(adb: str, serial: str, root_mode: str, server: Path,
             raise SetupError(
                 f'Staged Frida server did not report expected version {version!r}; destination was not changed.'
             )
+        # Candidate verification precedes stopping the existing daemon, so a
+        # corrupt upload leaves the currently working server untouched.
+        destination_is_safe = (
+            f'if {remote_quote("test", "-L", REMOTE_SERVER)} || '
+            f'{remote_quote("test", "-d", REMOTE_SERVER)}; then exit 1; '
+            f'elif {remote_quote("test", "-f", REMOTE_SERVER)} || '
+            f'{remote_quote("test", "!", "-e", REMOTE_SERVER)}; then :; else exit 1; fi'
+        )
+        run_root(
+            adb, serial, root_mode, destination_is_safe,
+            'Checking managed Frida server destination',
+        )
+        stop_managed_servers(adb, serial, root_mode)
+        remaining = managed_server_pids(adb, serial, root_mode)
+        if remaining:
+            raise SetupError(
+                'Managed Frida server appeared while preparing replacement '
+                f'(PID(s): {", ".join(remaining)}); destination was not replaced.'
+            )
         run_root(
             adb, serial, root_mode,
-            f'{remote_quote("test", "!", "-d", REMOTE_SERVER)} && {remote_quote("mv", staging, REMOTE_SERVER)}',
+            f'{destination_is_safe}; {managed_server_absent_command()} && '
+            f'{remote_quote("mv", staging, REMOTE_SERVER)}',
             'Installing Frida server',
         )
         cleanup_needed = False  # mv consumed the owned staging file.
@@ -501,10 +673,10 @@ def warn_frida_version(version: str) -> None:
         )
 
 
-def open_device_shell(adb: str, serial: str, shell_mode: str) -> int:
-    """Hand the user a selected-device shell in the install directory without starting Frida."""
+def open_device_shell(adb: str, serial: str, root_mode: str) -> int:
+    """Hand the user a root shell in the install directory after server setup."""
     command = f'cd {shlex.quote(REMOTE_DIRECTORY)} && exec /system/bin/sh -i'
-    shell_arguments = root_command(shell_mode, command)
+    shell_arguments = root_command(root_mode, command)
     argv = [adb, '-s', serial, shell_arguments[0], '-t', shell_arguments[1]]
     # -t asks adb for a terminal.  Keep stdin/stdout/stderr inherited so this is
     # an actual operator shell rather than a captured subprocess.
@@ -529,8 +701,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--device-id', '-s', help='ADB serial when more than one Android device is online.')
     parser.add_argument('--adb', help='ADB executable name or absolute/relative path.')
     shell_mode = parser.add_mutually_exclusive_group()
-    shell_mode.add_argument('--no-shell', action='store_true', help='Install only; do not open the interactive root shell.')
-    shell_mode.add_argument('--shell', action='store_true', help='Open an interactive selected-device shell only; do not install Frida.')
+    shell_mode.add_argument('--no-shell', action='store_true', help='Install and start Frida server without opening an interactive shell.')
+    shell_mode.add_argument('--shell', action='store_true', help='Reuse or start the existing managed server, then open an interactive root shell.')
     return parser
 
 
@@ -551,13 +723,19 @@ def main(argv: list[str] | None = None) -> int:
         adb = resolve_adb(args.adb)
         device = select_device(list_adb_devices(adb), args.device_id)
         if args.shell:
-            # Shell-only deliberately stops here: no SDK/ABI read, release API,
-            # download, staging directory, installation, or adb root fallback.
-            root_mode = probe_existing_root(adb, device.serial)
-            shell_mode = root_mode or 'normal'
-            privilege = f'root via {root_mode}' if root_mode else 'normal adb-shell permissions'
-            print(f'Opening /data/local/tmp on {device.serial} with {privilege}.', flush=True)
-            return open_device_shell(adb, device.serial, shell_mode)
+            # Shell-only may start a server, so it requires root. It skips the
+            # normal install target checks because it does not download/update.
+            root_mode = probe_root(adb, device.serial)
+            action, pids = use_existing_server(adb, device.serial, root_mode)
+            if action == 'reused':
+                print(f'Reusing managed Frida server on {device.serial} (PID(s): {", ".join(pids or [])}).', flush=True)
+            elif action == 'started':
+                print(f'Started existing managed Frida server on {device.serial} (PID(s): {", ".join(pids or [])}).', flush=True)
+            else:
+                print(f'No managed Frida server is installed on {device.serial}; opening a root shell only.', flush=True)
+            return open_device_shell(adb, device.serial, root_mode)
+        # Refuse a mismatched architecture before probe_root can call adb root
+        # and restart adbd. Normal setup only mutates after this preflight.
         sdk, abi, architecture = validate_target(adb, device.serial, args.arch)
         root_mode = probe_root(adb, device.serial)
         print(f'Using {device.serial}: Android SDK {sdk}, ABI {abi}, arch {architecture}, root via {root_mode}.', flush=True)
@@ -575,8 +753,12 @@ def main(argv: list[str] | None = None) -> int:
             validate_elf(server, architecture)
             install_server(adb, device.serial, root_mode, server, release.version)
 
-        print(f'Installed Frida server {release.version} at {REMOTE_SERVER} on {device.serial}.', flush=True)
-        print('Start it manually with: ./frida-server', flush=True)
+        pids = launch_server(adb, device.serial, root_mode)
+        print(
+            f'Installed and started Frida server {release.version} at {REMOTE_SERVER} on '
+            f'{device.serial} (PID(s): {", ".join(pids)}).',
+            flush=True,
+        )
         if args.no_shell:
             return 0
         return open_device_shell(adb, device.serial, root_mode)

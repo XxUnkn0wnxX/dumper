@@ -61,6 +61,64 @@ def _query_system_parameters(device, timeout=OS_QUERY_TIMEOUT):
 
 
 # ------------------------------------------------------------------------------
+# ANDROID API METADATA
+# Frida exposes Android's SDK level as a top-level `api-level` field. Keep this
+# probe separate from OS classification so the selected device is queried once
+# for the output label without adding an ADB dependency.
+# ------------------------------------------------------------------------------
+def _normalise_android_api_level(value):
+    """Return a canonical positive API level, or None for malformed metadata."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return str(value) if value > 0 else None
+    if isinstance(value, str):
+        if not value or not value.isascii() or any(char < '0' or char > '9' for char in value):
+            return None
+        try:
+            numeric_value = int(value)
+        except ValueError:
+            return None
+        return str(numeric_value) if numeric_value > 0 else None
+    return None
+
+
+def get_android_api_level(device):
+    """Return a selected device's SDK API label, or ``unknown`` on bad metadata.
+
+    KeyboardInterrupt is intentionally allowed to propagate so Ctrl-C remains a
+    cancellation rather than being converted into a recoverable output label.
+    """
+    try:
+        parameters = _query_system_parameters(device)
+    except Exception as error:
+        LOGGER.warning(
+            'Android API metadata query failed for Frida device %s: %s',
+            _device_label(device),
+            error,
+        )
+        return 'unknown'
+
+    try:
+        value = parameters['api-level']
+    except (KeyError, TypeError):
+        LOGGER.warning(
+            'Android API metadata is missing or malformed for Frida device %s',
+            _device_label(device),
+        )
+        return 'unknown'
+
+    api_level = _normalise_android_api_level(value)
+    if api_level is None:
+        LOGGER.warning(
+            'Android API metadata is missing or malformed for Frida device %s',
+            _device_label(device),
+        )
+        return 'unknown'
+    return api_level
+
+
+# ------------------------------------------------------------------------------
 # ANDROID CLASSIFICATION
 # Accept only os.id == 'android'. A device name, USB transport, or Linux label is
 # insufficient. Query/metadata failures are logged and excluded from selection.

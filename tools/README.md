@@ -20,8 +20,10 @@ and the [archived WKS-KEYS protobuf sources](../archives/wks-keys/README.md).
 
 [`setup_frida.py`](setup_frida.py) downloads an Android Frida server from the official
 [Frida releases](https://github.com/frida/frida/releases), installs it as
-`/data/local/tmp/frida-server`, and opens an interactive root shell in that
-directory. You start the server yourself by entering `./frida-server`.
+`/data/local/tmp/frida-server`, starts it automatically in the background, and
+opens an interactive root shell in that directory. Frida keeps running after
+you exit the shell. Use `--shell` to start or reuse the installed server without
+downloading a replacement.
 
 Use the helper for repeat test-device setups or to prepare several maintainer
 devices one at a time. Device selection, architecture, and release version can
@@ -29,8 +31,8 @@ all be specified independently or combined in the same invocation.
 
 The helper uses Python 3.10 or newer and the standard library. It requires an
 online, rooted Android device or a root-capable emulator, plus ADB on the computer.
-It does not root an unrooted device. The shell-only mode described below can also
-connect as the normal ADB user.
+It does not root an unrooted device. **Every mode requires root**, including
+`--shell`; if root is unavailable, the helper stops with setup guidance.
 
 No virtual environment or additional Python requirements are needed when ADB is
 installed on the system. You can replace `.venv/bin/python` in the examples with
@@ -72,9 +74,9 @@ Expect `1`, `userdebug` (or `eng`), and finally `uid=0(root)`. `adb root` restar
 the device's ADB daemon. If it reports `adbd cannot run as root in production
 builds`, use a root-capable image or root the device separately.
 
-Normal helper installation already tries `adb root` if existing root and `su`
-are unavailable. `--shell` only uses existing privileges, so run `adb root` first
-when you want a root shell on an image without `su`.
+Both normal installation and `--shell` try `adb root` if existing root and `su`
+are unavailable. On a physical device, arrange working root access through `su`
+before using the helper.
 
 </details>
 
@@ -184,32 +186,42 @@ Options can be combined. On Windows, for example:
 | `--arch {auto,x86_64,x86,arm64,arm}` | Detect the primary ABI with `auto`, or select one of the four explicit architectures; an explicit choice must match the device's primary ABI. | `auto` | `.venv/bin/python tools/setup_frida.py --arch arm64` |
 | `--device-id SERIAL`, `-s SERIAL` | Select an online ADB device explicitly. | The only online `device` entry | `.venv/bin/python tools/setup_frida.py --device-id emulator-5554` |
 | `--adb PATH` | Use a specific `adb` or `adb.exe` executable. | `adb` on `PATH`, then an `adbutils` bundled binary | `.venv/bin/python tools/setup_frida.py --adb /opt/android/platform-tools/adb` |
-| `--no-shell` | Install and exit without opening the interactive shell; mutually exclusive with `--shell`. | Off; the default install flow opens a shell | `.venv/bin/python tools/setup_frida.py --no-shell` |
-| `--shell` | Open only a shell in `/data/local/tmp`, preferring root or `su` and falling back to the normal ADB user; mutually exclusive with `--no-shell`, `--ver`, and a manual (non-`auto`) `--arch`. | Off | `.venv/bin/python tools/setup_frida.py --shell` |
+| `--no-shell` | Replace and start Frida, then exit without opening the interactive shell; mutually exclusive with `--shell`. | Off; the default setup flow opens a root shell after startup | `.venv/bin/python tools/setup_frida.py --no-shell` |
+| `--shell` | Start the installed Frida server if present, reuse it if already running, or just open `/data/local/tmp` if absent. Requires root and performs no download or replacement; mutually exclusive with `--no-shell`, `--ver`, and a manual (non-`auto`) `--arch`. | Off | `.venv/bin/python tools/setup_frida.py --shell` |
 
 The helper first checks whether the ADB shell is already root. Otherwise it tries
 `su -c` and the emulator-style `su 0 sh -c`. Approve any root-manager prompt on
 Android. If neither works, it tries `adb root`, which can restart the device's ADB
-daemon, waits for that device to reconnect, and verifies root again. Installation
-stops if no working root method is available.
+daemon, waits for that device to reconnect, and verifies root again. Both setup
+and `--shell` stop if no working root method is available. For an emulator, use
+the debug-image guidance above; a physical device needs working root/`su` access.
 
 The download is unpacked locally and checked for the selected ELF architecture.
 The helper verifies the release asset's SHA-256 when GitHub provides one; older
 releases may have no published digest. It pushes a uniquely named temporary file
 to `/data/local/tmp`, sets root ownership and executable permissions, checks its
-`--version`, and renames it to `frida-server` after validation.
+`--version`, stops the previous server at the managed path, and renames the
+validated binary to `frida-server`. It then launches the new server with
+`--daemonize`, which [Frida implements with a startup result](https://github.com/frida/frida-core/blob/16.3.3/server/server.vala).
+Startup errors stop the helper instead of reporting a successful launch.
 
-After installation, the interactive shell should start as root in
-`/data/local/tmp`. Check and start the server yourself:
+Every normal setup run downloads and replaces the server, even if the selected
+version is already installed. Replacing a running server interrupts active Frida
+sessions. The helper identifies it by the exact executable path under `/proc`,
+sends `SIGTERM`, and waits for it to stop. If it does not stop, setup fails; it
+does not force-kill it or terminate an unrelated process using the same port.
+
+After startup, the interactive shell should open as root in `/data/local/tmp`:
 
 ```sh
 id -u
 pwd
-./frida-server
+./frida-server --version
 ```
 
-Expect `0` and `/data/local/tmp` from the first two commands. Leave the server
-running in that terminal, then open another host terminal and run the dumper:
+Expect `0` and `/data/local/tmp` from the first two commands. The server is already
+running, so do not launch a second copy. Enter `exit` to return to the host
+terminal, or open another host terminal and run the dumper:
 
 ```sh
 .venv/bin/python dump_keys.py
@@ -221,11 +233,11 @@ the host environment. Choose `--ver` to match your installed Frida, or deliberat
 update the host packages before using a newer server. Selecting an old server
 version does not establish compatibility with this fork's current Frida APIs.
 
-The helper does not start, stop, or restart Frida server processes. Replacing the
-installed file does not update an already running server; stop that process
-yourself before starting the newly installed version.
+Use `--no-shell` for unattended setup: it performs the same replacement and
+automatic startup, then returns to the host terminal. The default mode and
+`--shell` require an interactive terminal.
 
-### Open only the device shell
+### Reuse the installed server and open a shell
 
 For a device that is already prepared, or to inspect it manually:
 
@@ -234,15 +246,20 @@ For a device that is already prepared, or to inspect it manually:
 .venv/bin/python tools/setup_frida.py --shell --device-id emulator-5554
 ```
 
-This mode only selects the device, checks available shell privileges, and opens
-an interactive shell in `/data/local/tmp`. It tries an existing root shell and
-the supported `su` forms, then falls back to the normal ADB user if they fail.
-It does not invoke `adb root` or restart the device's ADB daemon.
+This is the helper's launch mode for a device that is already prepared. After
+verifying root access, it checks `/data/local/tmp/frida-server`:
+
+| Installed state | `--shell` behavior |
+| --- | --- |
+| Executable present and stopped | Starts it in the background, then opens a root shell. |
+| Server already running from the managed path | Reuses it and opens a root shell without starting another copy. |
+| File absent and no managed server running | Opens a root shell in `/data/local/tmp`. |
+| Invalid installation or startup failure | Reports the error and stops. |
 
 There is no architecture check, release lookup, download, upload, permission
-change, or Frida startup in this mode. `--device-id` and `--adb` remain available;
+change, or replacement in this mode. `--device-id` and `--adb` remain available;
 `--shell` cannot be combined with `--no-shell`, `--ver`, or a manual `--arch`.
-The fallback shell's permissions are those of the normal ADB user.
+It uses the same root checks as installation, including the `adb root` fallback.
 
 ### Cleanup and maintainer checks
 
@@ -264,8 +281,10 @@ The focused tests use mocked ADB commands and synthetic release/download data:
 
 The test module is [`tests/test_frida_setup.py`](../tests/test_frida_setup.py).
 
-Live device installation, root-manager behavior, and the final interactive shell
-still require manual verification on the target device.
+The earlier installation/manual-start workflow was reported working on Android
+9 / API 28 on 2026-09-20. The new automatic startup and replacement behavior still
+needs live verification. Mocked tests cover these flows, root refusal, startup
+failures, and selecting only the process at the managed executable path.
 
 <details>
 <summary>🧪 Optional live-device checklist</summary>
@@ -274,13 +293,18 @@ On a test device, verify these paths:
 
 1. Run the default setup command and confirm its reported ABI/architecture. In the
    resulting shell, check `id -u`, `pwd`, and `./frida-server --version`; expect
-   root, `/data/local/tmp`, and the selected release. Start the server yourself
-   when ready.
-2. Run `--shell` on an already prepared device. Confirm the working directory and
-   root access; on an unrooted device, confirm it opens with normal permissions.
-3. With multiple online devices, confirm `--device-id` selects the intended one.
+   root, `/data/local/tmp`, and the selected release. Exit the shell and confirm
+   the host dumper can connect without starting Frida manually.
+2. Re-run setup on an idle test device; confirm the server is replaced and starts
+   again. Check that `--no-shell` starts it and returns to the host terminal.
+3. Run `--shell` with an installed but stopped server, then again while it is
+   running. Confirm it starts once and is reused on the second run. On a fresh
+   rooted device without the installed file, confirm it opens the directory only.
+4. On a device without working `su` or `adb root`, confirm both modes stop with
+   root/image guidance instead of opening an unprivileged shell.
+5. With multiple online devices, confirm `--device-id` selects the intended one.
    Try a deliberately mismatched `--arch` and confirm it stops before uploading.
-4. After setup, confirm its local `tmp/frida-*` download directory has been removed.
+6. After setup, confirm its local `tmp/frida-*` download directory has been removed.
 
 </details>
 

@@ -85,8 +85,9 @@ Run these commands from the repository root with the virtual environment active.
 1. Connect the Android device, enable USB debugging, and accept its authorization
    prompt.
 2. Prepare and start Frida server using the
-   [Frida setup guide](tools/README.md#frida-server-setup). The helper installs the
-   server and opens a shell; you start the server yourself.
+   [Frida setup guide](tools/README.md#frida-server-setup). The helper installs and
+   starts the server automatically, then opens a root shell. Frida keeps running
+   after you exit that shell. Use `--shell` to reuse an existing installation.
 3. In another host terminal, activate the environment and start the dumper:
 
    ```sh
@@ -125,14 +126,37 @@ previously captured RSA private key:
 
 ```text
 key_dumps/
-└── <device>/private_keys/<system-id>/<key-prefix>/
-    ├── client_id.bin
-    └── private_key.pem
+└── <android-device>/
+    └── private_keys/
+        └── CDM <version> - API <level>/
+            ├── client_id.bin
+            └── private_key.pem
 ```
 
-`<system-id>` comes from the client ID, and `<key-prefix>` is the first ten decimal
-digits of the RSA key modulus. The log reports the save directory. Hook setup or
-an unmatched request alone does not create the pair.
+For example, an Android 9 capture reporting CDM `14.0.0` is saved under
+`key_dumps/Android Emulator 5554/private_keys/CDM 14.0.0 - API 28/`.
+
+| Folder value | Source |
+| --- | --- |
+| Android device | The selected Frida device's display name, such as `Android Emulator 5554`. This is distinct from the ADB serial `emulator-5554`. |
+| CDM version | `widevine_cdm_version` in the captured client ID. The `--cdm-version` layout option does not set this value. |
+| API level | The selected Android device's API level reported by Frida, such as `28` for Android 9. |
+
+Unavailable metadata is labelled `unknown` and logged; version values are never
+guessed from a layout signature. Folder components are sanitized for Windows,
+macOS, and Linux, so the separator is `-` instead of the Windows-invalid `|`.
+
+If the destination already exists, the new pair goes into a sibling folder with
+the computer's local date and time, for example
+`CDM 14.0.0 - API 28 (2026-09-20 15-45-30)`. Same-time collisions receive a more
+precise timestamp. Existing pairs are preserved, including when a later run
+captures the same pair. Repeated identical callbacks within one dumper run reuse
+that run's saved folder.
+
+The log reports the save directory. Hook setup or an unmatched request alone does
+not create a pair. Older output is left in place: its two numeric folder names
+were the certificate's **Widevine system ID** and the **first ten decimal digits
+of the RSA key modulus**, respectively.
 
 ## Layout detection and options
 
@@ -200,9 +224,10 @@ The runtime signature table and maintainer comments live in
 | Area | Evidence | Still needs verification |
 | --- | --- | --- |
 | Manual capture | Reported success on a rooted Pixel 6 Pro running Android 13 with manual layout `17.0.0`. | Other devices and library builds. |
-| Automatic layout detection | Offline checks against the saved device library and 12 library fixtures from eight Android 9–13 SDK packages, including Android 12L. | Live automatic detection and capture. |
-| Protobuf | Schema and serialization regressions using synthetic requests from the original Protobuf 3.19.3 binding. | Live device operation after the runtime migration. |
-| Frida setup helper | Mocked device/installation tests and an official release download with checksum, extraction, architecture, and cleanup checks. | Device installation, root-manager behavior, and interactive shell access. |
+| Automatic layout detection | User-confirmed live success on Android 9 / API 28 with plain `python dump_keys.py` (2026-09-20): Android selection, `libwvhidl.so` detection, automatic `args[4]` layout, and key retrieval. Offline checks also cover 12 library fixtures from eight Android 9–13 SDK packages, including Android 12L. | Live automatic capture on other Android versions and library builds. |
+| Protobuf | Schema and serialization regressions using synthetic requests from the original Protobuf 3.19.3 binding; the updated dumper was reported working on Android 9. | Further device coverage and validation after future compiler/runtime updates. |
+| Capture folders | Synthetic output tests for CDM/API labels, timestamp collisions, and preservation of existing pairs. | Live capture using the new folder layout. |
+| Frida setup helper | User-confirmed Android 9 setup with the earlier manual-start workflow (2026-09-20), mocked lifecycle tests, and an official release download with checksum, extraction, architecture, and cleanup checks. | The new automatic startup/replacement flow, reuse through `--shell`, and root-manager behavior on other devices. |
 
 **Android 14 and later are outside this fork's current verified scope.** An SDK
 fixture proves how that sample's signature is classified; it does not establish
