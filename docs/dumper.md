@@ -240,11 +240,11 @@ to open the configured test page after hooks are ready.
 | `--module-name NAME [NAME ...]` | Search one or more named Widevine libraries. | `libwvaidl.so libwvhidl.so` | `python dump_keys.py --module-name libwvhidl.so libwvaidl.so` |
 | `--no-browser` | Capture without configuring or opening Chrome through ADB. | Browser launch enabled. | `python dump_keys.py --no-browser` |
 | `--site-file PATH` | Read the single active HTTPS test-page URL from a different text file. | Repository `drm_test_site.txt` | `python dump_keys.py --site-file my_test_site.txt` |
-| `--non-interactive` | Strict automatic mode for the full-auto controller. Requires `--cdm-version auto` and no `--function-name`; it does not enable manual layout or function overrides. | Off | `python dump_keys.py --non-interactive` |
+| `--non-interactive` | Internal flag reserved for `full_auto.py`, which supplies it automatically. Requires `--cdm-version auto` and no `--function-name`. Omit it for manual runs. | Off | Set by `python full_auto.py` |
 
-The full-auto controller uses `--non-interactive` after Frida startup has been
-verified. Manual `--cdm-version` and `--function-name` remain available for
-advanced direct dumper runs and are outside that workflow's coverage.
+The full-auto controller supplies `--non-interactive` automatically. Manual
+`--cdm-version` and `--function-name` remain available for advanced direct
+dumper runs and are outside that workflow's coverage.
 
 <details>
 <summary>🔎 Manual layouts and library overrides</summary>

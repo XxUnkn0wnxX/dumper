@@ -221,6 +221,14 @@ class ReadmeDocumentationTests(unittest.TestCase):
                         continue
                     rows_with_flags += 1
                     documented.update(row_flags)
+                    if row_flags == {"--non-interactive"}:
+                        # Internal child flags should direct users to the
+                        # controller rather than suggest a manual invocation.
+                        self.assertIn("reserved", cells[2].lower())
+                        self.assertIn("full_auto.py", cells[2])
+                        self.assertIn("python full_auto.py", cells[4])
+                        self.assertNotIn(script.name, cells[4])
+                        continue
                     self.assertIn(
                         script.name,
                         cells[4],

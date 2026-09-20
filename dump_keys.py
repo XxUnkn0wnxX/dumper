@@ -111,7 +111,7 @@ def main():
     )
     parser.add_argument(
         '--non-interactive', action='store_true',
-        help='Use automatic signature detection for a full-auto capture run.',
+        help='Internal option reserved for full_auto.py; omit this flag for manual runs.',
     )
     if DEPENDENCY_IMPORT_INTERRUPTED:
         raise KeyboardInterrupt

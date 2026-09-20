@@ -68,12 +68,17 @@ There is no `--cdm-version` or `--function-name` option in `full_auto.py`.
 Those advanced manual-layout controls remain available on direct
 `dump_keys.py` runs; see the [dumper guide](dumper.md#layout-detection-and-options).
 
+The child scripts' `--non-interactive` flag is reserved for `full_auto.py`, which
+supplies it automatically to both Frida setup and the dumper. Omit it when running
+either script manually; use `--no-shell` for manual Frida setup without a follow-up
+root prompt.
+
 ## Capture and completion
 
 After Frida startup is verified, the controller launches the dumper as the
-second background child with `--non-interactive`. The dumper still checks the
-exported signature and must successfully hook a supported layout; Android API
-level alone cannot establish that the capture is supported. Once both workers
+second background child, supplying its internal `--non-interactive` flag. The
+dumper still checks the exported signature and must successfully hook a supported
+layout; Android API level alone cannot establish that the capture is supported. Once both workers
 report ready, the controller warns after roughly 20 seconds if playback has
 not produced a pair, but waits indefinitely while the session remains healthy
 for user playback or a browser permission action.

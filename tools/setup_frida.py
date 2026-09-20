@@ -1536,7 +1536,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--device-id', '-s', help='ADB serial when more than one Android device is online.')
     parser.add_argument('--adb', help='ADB executable name or absolute/relative path.')
     shell_mode = parser.add_mutually_exclusive_group()
-    shell_mode.add_argument('--no-shell', '--non-interactive', action='store_true', help='Install and run Frida server in the foreground until it exits, without a follow-up shell.')
+    shell_mode.add_argument(
+        '--no-shell', '--non-interactive', action='store_true',
+        help='Install and run Frida server without a follow-up shell. '
+             'Use --no-shell for manual runs; --non-interactive is reserved for full_auto.py.',
+    )
     shell_mode.add_argument('--shell', action='store_true', help='Run the installed Frida server in the foreground, then open a root shell.')
     return parser
 
