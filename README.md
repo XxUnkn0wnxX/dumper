@@ -12,6 +12,7 @@ automatic request-layout detection, and optional maintainer tools.
 | 🧬 [Helpers and schema](Helpers/README.md) | The shipped Protobuf schema, generated binding, and source provenance. |
 | 📦 [Source archives](archives/wks-keys/README.md) | Local WKS-KEYS protobuf snapshots, inventory, and integrity checks. |
 | 🧪 [Local tests](tests.md) | Environment setup, regression commands, coverage, and live-test limits. |
+| 📚 [VideoHelp guides and references](#videohelp-guides-and-references) | Community setup walkthroughs, discussion, and historical references. |
 
 > **Compatibility:** automatic detection recognizes known `PrepareKeyRequest`
 > argument layouts. It does not identify an exact CDM version or guarantee that
@@ -84,10 +85,8 @@ Run these commands from the repository root with the virtual environment active.
    it stays running after saving a pair. Cancellation prints `Stopped by user.`
    and exits cleanly without a traceback, including during startup.
 
-> **Need help setting up Android Studio?** The VideoHelp walkthrough,
-> [Dumping Your own L3 CDM with Android Studio](https://forum.videohelp.com/threads/408031-Dumping-Your-own-L3-CDM-with-Android-Studio),
-> includes illustrated emulator setup and a community support discussion. Use
-> this repository's guides for the current helper commands and arguments.
+> **Need help setting up Android Studio?** See the illustrated walkthrough and
+> community discussions under [VideoHelp guides and references](#videohelp-guides-and-references).
 
 ### Choose a device
 
@@ -223,6 +222,18 @@ reference, not a general setup requirement. Compatibility with current devices
 has not been verified by this fork.
 
 </details>
+
+## VideoHelp guides and references
+
+These community resources provide additional setup help and background. Use this
+README and the [tools guide](tools/README.md) for this fork's current commands and
+arguments.
+
+| Guide or discussion | What it covers |
+| --- | --- |
+| [Dumping Your own L3 CDM with Android Studio](https://forum.videohelp.com/threads/408031-Dumping-Your-own-L3-CDM-with-Android-Studio) | Illustrated Android Studio/emulator setup and community support. |
+| [Decryption and the Temple of Doom](https://forum.videohelp.com/threads/404994-Decryption-and-the-Temple-of-Doom) | Broader CDM and decryption background, guides, and community discussion. |
+| [Now out of date: Archived for reference](https://forum.videohelp.com/threads/414908-Now-out-of-date-Archived-for-reference) | **Historical reference:** the archived, out-of-date version of the original Temple of Doom guide. |
 
 ## Tests and maintenance
 
