@@ -54,7 +54,7 @@ The [setup guide](docs/setup.md) has complete checkout and environment commands.
 For a new checkout on macOS or Linux:
 
 ```sh
-git clone --branch main https://github.com/XxUnkn0wnxX/dumper.git
+git clone --branch main git@github.com:XxUnkn0wnxX/dumper.git
 cd dumper
 python3 init.py
 ```
