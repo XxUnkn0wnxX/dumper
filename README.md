@@ -20,7 +20,8 @@ tools.
 | 🧰 [Frida server setup](docs/frida-setup.md) | `setup_frida.py` workflow, arguments, cache, foreground operation, cleanup, and cancellation. |
 | 🧬 [Protobuf schema and regeneration](docs/protobuf.md) | Regeneration arguments, runtime pinning, schema provenance, and archive references. |
 | 📦 [Optional WVD tooling](docs/wvd.md) | The separate `.venv-wvd` environment and `pywidevine` requirements. |
-| 🧩 [Dumper operation](docs/dumper.md) | Device selection, browser flags and undo, capture/output behavior, layout detection, and dumper arguments. |
+| 🧩 [Dumper operation](docs/dumper.md) | Device selection, test-page configuration, capture/output behavior, layout detection, and dumper arguments. |
+| 🌐 [Chrome browser setup](docs/chrome.md) | Onboarding suppression, autoplay flags, compatibility, and how to undo testing settings. |
 | 🤖 [Experimental full-auto workflow](docs/full-auto.md) | Background initialization, Frida, and dumper orchestration with four persistent raw logs, ownership boundaries, flags, and current platform scope. |
 | 🧪 [Testing and verified scope](docs/testing.md) | Regression commands, coverage, live evidence, and current Android limits. |
 | 📝 [Planned SDK and helper work](docs/TODO.md) | Android 14–17 module inspection and the deferred WVD helper. |

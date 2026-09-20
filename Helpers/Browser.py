@@ -33,6 +33,29 @@ _EXISTS_MARKER = '__DUMPER_CHROME_FLAGS_EXISTS__'
 _SYMLINK_MARKER = '__DUMPER_CHROME_FLAGS_SYMLINK__'
 _ERROR_MARKERS = ('Error:', 'SecurityException', 'Exception occurred')
 
+# Keep the browser policy in data so a verified compatibility addition is a
+# small, reviewable change.  Scalar switches are compared by their name before
+# ``=``; their values below are the exact tokens written to Chrome.
+_MANAGED_SCALAR_FLAGS = (
+    '--disable-fre',
+    '--no-first-run',
+    '--autoplay-policy=no-user-gesture-required',
+    '--disable-startup-promos-for-testing',
+    '--propagate-iph-for-testing',
+    '--disable-default-browser-promo',
+)
+
+# FeatureList consumes each switch as one comma-separated value.  Keep the
+# feature entry, including its parameter syntax, in the policy data.  The
+# NotificationPermissionVariant parameter limits permission-request prompts;
+# it does not grant or revoke an Android permission.
+_MANAGED_ENABLED_FEATURES = (
+    'NotificationPermissionVariant:permission_request_max_count/0',
+    'DisablePrivacySandboxPrompts',
+)
+_MANAGED_DISABLED_FEATURES: tuple[str, ...] = ()
+_FEATURE_SWITCHES = ('--enable-features', '--disable-features')
+
 
 class BrowserSetupError(RuntimeError):
     """A browser preflight, flags, or launch operation could not complete."""
@@ -268,26 +291,115 @@ def _parse_chrome_flags(content: str) -> list[_ChromeFlag]:
     return tokens
 
 
+def _feature_base(entry: str) -> str:
+    """Return a feature name without override, trial, or parameter syntax."""
+    value = entry.strip()
+    if value.startswith('*'):
+        value = value[1:]
+    # Chromium parses feature parameters first, then an optional dot group,
+    # then a study override after ``<``.  All of those forms still belong to
+    # the same managed feature identity.
+    value = value.split(':', 1)[0]
+    value = value.split('.', 1)[0]
+    return value.split('<', 1)[0]
+
+
+def _feature_entries(value: str | None) -> list[str]:
+    """Split one effective Chrome feature-switch value into unique entries."""
+    if not value:
+        return []
+    entries: list[str] = []
+    seen: set[str] = set()
+    for entry in value.split(','):
+        if not entry.strip() or entry in seen:
+            continue
+        entries.append(entry)
+        seen.add(entry)
+    return entries
+
+
+def _chrome_quote_feature_value(value: str) -> str:
+    """Quote a reconstructed feature value for Chromium's tokenizer.
+
+    ``shlex.quote`` uses POSIX shell rules, which are not Chrome's rules.  A
+    double-quoted Chrome fragment preserves spaces and literal quotes; trailing
+    backslashes stay outside the closing quote so they cannot escape it.
+    """
+    if not any(character.isspace() or character in ('"', "'") for character in value):
+        return value
+
+    trailing = len(value) - len(value.rstrip('\\'))
+    core = value[:-trailing] if trailing else value
+    encoded = ['"']
+    for character in core:
+        if character == '"':
+            # Inside a double-quoted Chrome fragment, a backslash before a
+            # quote makes that quote literal and keeps the quoted section open.
+            encoded.extend(('\\', '"'))
+        else:
+            encoded.append(character)
+    encoded.append('"')
+    if trailing:
+        encoded.append('\\' * trailing)
+    return ''.join(encoded)
+
+
+def _feature_flag(switch: str, entries: Iterable[str]) -> _ChromeFlag:
+    """Build one switch and retain the parsed value alongside its raw token."""
+    value = f'{switch}={",".join(entries)}'
+    raw_value = _chrome_quote_feature_value(value.partition('=')[2])
+    raw = f'{switch}={raw_value}'
+    return _ChromeFlag(raw, value)
+
+
 def _merge_chrome_flags(existing: Iterable[_ChromeFlag]) -> list[_ChromeFlag]:
-    """Preserve unrelated options while replacing the three DRM flags."""
-    managed = {'--disable-fre', '--no-first-run', '--autoplay-policy'}
+    """Preserve unrelated options while applying the verified browser policy.
+
+    Chromium's command-line switch map uses the last occurrence of a repeated
+    switch.  We therefore retain only the last pre-``--`` feature switch value
+    before filtering entries; this preserves the effective unrelated features
+    without accidentally re-enabling an earlier, shadowed value.
+    """
+    managed_scalars = {
+        policy.partition('=')[0] for policy in _MANAGED_SCALAR_FLAGS
+    }
+    managed_features = {
+        _feature_base(entry)
+        for entry in (*_MANAGED_ENABLED_FEATURES, *_MANAGED_DISABLED_FEATURES)
+    }
     original = list(existing)
     # Chrome consumes argv[0] as the executable name. Keep that placeholder,
     # and put managed switches before any end-of-options marker.
     flags = original[:1] or [_ChromeFlag('_', '_')]
     tail: list[_ChromeFlag] = []
+    effective_features: dict[str, str | None] = {switch: None for switch in _FEATURE_SWITCHES}
     for index, flag in enumerate(original[1:], 1):
         if flag.value == '--':
             tail = original[index:]
             break
-        if flag.value.partition('=')[0] in managed:
+        switch, separator, switch_value = flag.value.partition('=')
+        if switch in effective_features:
+            # Repeated feature switches have last-value-wins semantics in
+            # Chromium's command-line switch map.
+            effective_features[switch] = switch_value if separator else ''
+            continue
+        if switch in managed_scalars:
             continue
         flags.append(flag)
-    flags.extend(_ChromeFlag(value, value) for value in (
-        '--disable-fre',
-        '--no-first-run',
-        '--autoplay-policy=no-user-gesture-required',
-    ))
+
+    flags.extend(_ChromeFlag(value, value) for value in _MANAGED_SCALAR_FLAGS)
+
+    for switch, managed_entries in (
+        ('--enable-features', _MANAGED_ENABLED_FEATURES),
+        ('--disable-features', _MANAGED_DISABLED_FEATURES),
+    ):
+        entries = [
+            entry for entry in _feature_entries(effective_features[switch])
+            if _feature_base(entry) not in managed_features
+        ]
+        entries.extend(entry for entry in managed_entries if entry not in entries)
+        if entries:
+            flags.append(_feature_flag(switch, entries))
     return flags + tail
 
 

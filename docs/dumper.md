@@ -68,86 +68,23 @@ It always runs `am force-stop com.android.chrome` before the new launch. This
 closes an already-open Chrome instance and also succeeds when Chrome is stopped.
 If that stop fails, the launcher warns and does not open another instance.
 
-| Setting | Purpose and effect |
-| --- | --- |
-| `am set-debug-app --persistent com.android.chrome` | Selects Chrome as Android's debug app so supported Chrome builds can read testing flags while ADB debugging is enabled. Replaces any previously selected debug app and persists across reboots. Does not enable “Wait for debugger.” |
-| `--disable-fre` | Skips Chrome's first-run flow, including welcome/sign-in prompts on supported versions. |
-| `--no-first-run` | Suppresses supported first-run initialization behavior. |
-| `--autoplay-policy=no-user-gesture-required` | Allows media autoplay without an initial tap; the page still has to request playback. |
+The shared launcher suppresses supported Chrome onboarding and startup promos,
+configures autoplay, and preserves unrelated browser flags. Full auto uses the
+same settings. See the dedicated [Chrome setup guide](chrome.md) for the full
+flag table, compatibility scope, and **undo instructions for real phones**.
 
-The three flags are written to `/data/local/tmp/chrome-command-line` with mode
-`0644`. Existing values of these flags are replaced; unrelated flags are
-preserved. Desktop-mode and user-agent settings are left unchanged. The
-launcher does not change `ro.debuggable`, enable USB debugging, or restart Frida
-or ADB. See [Android activity-manager commands](https://developer.android.com/tools/adb#am)
-and [Chrome's autoplay testing flag](https://developer.chrome.com/blog/autoplay/#developer-switches).
-
-These settings remain on the device for subsequent launches. The log confirms
-that the URL was opened, not that playback or a dump succeeded. The page must
-initiate playback itself; allowing autoplay does not press a custom Load/Play
-button or solve browser challenges. Missing ADB/Chrome, device mismatches,
-timeouts, or launch errors leave the dumper capturing with manual-playback
-guidance.
-
-To keep browser setup and navigation entirely manual:
+To keep browser setup and navigation manual:
 
 ```sh
 python dump_keys.py --no-browser
 ```
 
-`--no-browser` skips only browser configuration and navigation; it does not
-disable exit cleanup. If a selected device is available, the dumper still
-attempts to stop Chrome, including Chrome opened manually by the user. To use
-a different active URL file:
+`--no-browser` skips startup configuration and navigation; exit cleanup still
+attempts to stop Chrome on the selected device. To use another active URL file:
 
 ```sh
 python dump_keys.py --site-file my_test_site.txt
 ```
-
-<details>
-<summary>↩️ Undo Chrome testing settings on an emulator or real phone</summary>
-
-Stop the dumper first. Use `--no-browser` on future runs if you do not want the
-settings reapplied. Replace `emulator-5554` with the phone's ADB serial.
-
-Preserve unrelated Chrome flags by copying the current file to a repository
-`.tmp` folder. On macOS/Linux, create it with:
-
-```sh
-mkdir -p .tmp
-adb -s emulator-5554 pull /data/local/tmp/chrome-command-line .tmp/chrome-command-line
-```
-
-In Windows PowerShell, use `New-Item -ItemType Directory -Force .tmp` before
-the equivalent `adb` command.
-
-Open `.tmp/chrome-command-line` in a text editor. Remove
-`--disable-fre`, `--no-first-run`, and
-`--autoplay-policy=no-user-gesture-required`, keeping the first executable
-placeholder (`_` or the original name) and any other flags. Restore previous
-custom values if applicable, then apply the file and clear the selected debug app:
-
-```sh
-adb -s emulator-5554 push .tmp/chrome-command-line /data/local/tmp/chrome-command-line
-adb -s emulator-5554 shell chmod 644 /data/local/tmp/chrome-command-line
-adb -s emulator-5554 shell am clear-debug-app
-adb -s emulator-5554 shell am force-stop com.android.chrome
-```
-
-If the file contained only the dumper's three flags and you want to remove it:
-
-```sh
-adb -s emulator-5554 shell rm /data/local/tmp/chrome-command-line
-```
-
-`am clear-debug-app` clears Android's current debug-app selection; it does not
-restore a previously selected app. If another debug app was selected before
-testing, reselect it under **Developer options → Select debug app**, including
-the previous “Wait for debugger” preference. The dumper does not save the old
-debug-app selection or previous values of its managed flags. These steps do not
-clear Chrome browsing data or undo first-run choices already saved by Chrome.
-
-</details>
 
 ## Chrome cleanup on exit
 

@@ -44,6 +44,8 @@ dumper.
 
 The dumper uses the same browser launcher as a manual run: it force-stops Chrome
 on the selected Android device before opening the test URL for a fresh launch.
+It applies the shared [Chrome onboarding and autoplay settings](chrome.md);
+that guide lists every setting, compatibility limits, and how to undo them.
 
 The two capture children run in the background with each child's raw stdout and
 stderr redirected to its fixed log. The original terminal shows controller

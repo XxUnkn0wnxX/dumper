@@ -165,13 +165,22 @@ class BrowserHelperTests(unittest.TestCase):
         self.assertIn('--disable-fre', write_call['input'])
         self.assertIn('--no-first-run', write_call['input'])
         self.assertIn('--autoplay-policy=no-user-gesture-required', write_call['input'])
+        self.assertIn('--disable-startup-promos-for-testing', write_call['input'])
+        self.assertIn('--propagate-iph-for-testing', write_call['input'])
+        self.assertIn('--disable-default-browser-promo', write_call['input'])
+        self.assertIn(
+            '--enable-features=NotificationPermissionVariant:permission_request_max_count/0,'
+            'DisablePrivacySandboxPrompts',
+            write_call['input'],
+        )
+        self.assertNotRegex(write_call['input'], r'\b(?:grant|revoke|pm clear)\b')
         self.assertNotIn('--autoplay-policy=none', write_call['input'])
         for _command, kwargs in self.calls:
             self.assertIs(kwargs['shell'], False)
             self.assertEqual(kwargs['timeout'], 5)
 
     def test_managed_flags_are_inserted_before_existing_end_of_options_marker(self):
-        self.flags_content = 'chrome --keep -- --passthrough\n'
+        self.flags_content = 'chrome --keep --enable-features=Existing<Trial -- --passthrough\n'
         with mock.patch.object(browser, 'resolve_adb', return_value='/adb'), \
                 mock.patch.object(browser.subprocess, 'run', side_effect=self.run_command):
             self.assertTrue(self.launch())
@@ -181,6 +190,7 @@ class BrowserHelperTests(unittest.TestCase):
         self.assertLess(written.index('--disable-fre'), written.index(' -- '))
         self.assertLess(written.index('--no-first-run'), written.index(' -- '))
         self.assertLess(written.index('--autoplay-policy=no-user-gesture-required'), written.index(' -- '))
+        self.assertLess(written.index('--enable-features='), written.index(' -- '))
         self.assertTrue(written.endswith('-- --passthrough'))
 
     def test_missing_flags_file_starts_with_chrome_argv0(self):
@@ -231,6 +241,86 @@ class BrowserHelperTests(unittest.TestCase):
         raw = r'chrome --label="two words" --quote="a\"b" --path=C:\temp --dollar=$HOME --tick=`tick`'
         tokens = browser._parse_chrome_flags(raw)
         self.assertEqual(browser._serialize_chrome_flags(tokens), raw + '\n')
+
+    def test_feature_policy_removes_owned_conflicts_and_retains_unknown_entries(self):
+        raw = (
+            'chrome --keep="two words" '
+            '--enable-features="Unknown<Trial:Group,NotificationPermissionVariant<Old,'
+            '*DisablePrivacySandboxPrompts<OldTrial,Keep:Param/1" '
+            '--disable-features="NotificationPermissionVariant:blocked/1,'
+            '*DisablePrivacySandboxPrompts<Blocked,Other<Trial" -- --tail\n'
+        )
+        merged = browser._merge_chrome_flags(browser._parse_chrome_flags(raw))
+        values = [flag.value for flag in merged]
+        enable = [value for value in values if value.startswith('--enable-features=')]
+        disable = [value for value in values if value.startswith('--disable-features=')]
+
+        self.assertEqual(len(enable), 1)
+        self.assertEqual(len(disable), 1)
+        self.assertIn('Unknown<Trial:Group', enable[0])
+        self.assertIn('Keep:Param/1', enable[0])
+        self.assertIn('Other<Trial', disable[0])
+        self.assertIn('NotificationPermissionVariant:permission_request_max_count/0', enable[0])
+        self.assertIn('DisablePrivacySandboxPrompts', enable[0])
+        self.assertNotIn('NotificationPermissionVariant<Old', enable[0])
+        self.assertNotIn('DisablePrivacySandboxPrompts<OldTrial', enable[0])
+        self.assertNotIn('NotificationPermissionVariant:blocked/1', disable[0])
+        self.assertNotIn('DisablePrivacySandboxPrompts<Blocked', disable[0])
+        self.assertTrue(values[-2:] == ['--', '--tail'])
+
+    def test_feature_policy_removes_starred_grouped_managed_entries(self):
+        raw = (
+            'chrome '
+            '--enable-features="NotificationPermissionVariant.Group:permission_request_max_count/5,'
+            '*DisablePrivacySandboxPrompts.Group<OldStudy,Unrelated.Group:Param/1" '
+            '--disable-features="*NotificationPermissionVariant.Other:blocked/1,'
+            'DisablePrivacySandboxPrompts.Other<Blocked,Other.Group<Study"\n'
+        )
+        merged = browser._merge_chrome_flags(browser._parse_chrome_flags(raw))
+        values = [flag.value for flag in merged]
+        enable = next(value for value in values if value.startswith('--enable-features='))
+        disable = next(value for value in values if value.startswith('--disable-features='))
+
+        self.assertIn('Unrelated.Group:Param/1', enable)
+        self.assertIn('Other.Group<Study', disable)
+        self.assertNotIn('NotificationPermissionVariant.Group', enable)
+        self.assertNotIn('DisablePrivacySandboxPrompts.Group', enable)
+        self.assertNotIn('NotificationPermissionVariant.Other', disable)
+        self.assertNotIn('DisablePrivacySandboxPrompts.Other', disable)
+        self.assertIn('NotificationPermissionVariant:permission_request_max_count/0', enable)
+        self.assertIn('DisablePrivacySandboxPrompts', enable)
+
+    def test_reconstructed_feature_values_round_trip_chrome_quotes_and_backslashes(self):
+        raw = r'chrome --enable-features="Quoted Feature,With\backslash,Has\"quote" --keep="two words"'
+        merged = browser._merge_chrome_flags(browser._parse_chrome_flags(raw))
+        serialized = browser._serialize_chrome_flags(merged)
+        reparsed = browser._parse_chrome_flags(serialized)
+        values = [flag.value for flag in reparsed]
+        enable = next(value for value in values if value.startswith('--enable-features='))
+
+        self.assertIn('Quoted Feature', enable)
+        self.assertIn(r'With\backslash', enable)
+        self.assertIn('Has"quote', enable)
+        self.assertIn('--keep=two words', values)
+
+    def test_duplicate_feature_switches_use_effective_last_value_and_merge_is_idempotent(self):
+        raw = (
+            'chrome --enable-features=Shadowed --enable-features=Effective,Effective '
+            '--disable-features=ShadowedDisabled --disable-features=EffectiveDisabled,EffectiveDisabled\n'
+        )
+        first = browser._merge_chrome_flags(browser._parse_chrome_flags(raw))
+        first_serialized = browser._serialize_chrome_flags(first)
+        second_serialized = browser._serialize_chrome_flags(
+            browser._merge_chrome_flags(browser._parse_chrome_flags(first_serialized))
+        )
+        values = [flag.value for flag in first]
+
+        self.assertEqual(first_serialized, second_serialized)
+        self.assertEqual(sum(value.startswith('--enable-features=') for value in values), 1)
+        self.assertEqual(sum(value.startswith('--disable-features=') for value in values), 1)
+        self.assertIn('Effective,', next(value for value in values if value.startswith('--enable-features=')))
+        self.assertNotIn('Shadowed', first_serialized)
+        self.assertIn('EffectiveDisabled', first_serialized)
 
     def test_offline_or_different_device_stops_before_chrome_commands(self):
         def offline(command, **kwargs):
