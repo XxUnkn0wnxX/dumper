@@ -1,5 +1,11 @@
 # 🧩 Dumper
 
+> [!WARNING]
+> **Experimental branch — active rework**
+>
+> This branch is experimental and is currently being reworked. Features and
+> behavior may change, and live device testing is still in progress.
+
 A Python and Frida tool for capturing Widevine L3 client IDs and matching private
 keys from rooted Android devices. This fork includes Android device selection,
 automatic request-layout detection, and optional maintainer tools.
