@@ -73,6 +73,11 @@ Protobuf is pinned to the runtime supported by the shipped
 directly. Maintainers can optionally rebuild it using the checked-in schema;
 see [protobuf regeneration](tools/README.md#protobuf-regeneration).
 
+Optional `pywidevine` tooling has its own [requirements-wvd.txt](requirements-wvd.txt)
+and needs a **separate `.venv-wvd` environment** because its Protobuf requirements
+conflict with the dumper's. See [optional WVD tooling](tools/README.md#optional-wvd-tooling)
+for setup; automatic WVD creation is not implemented yet.
+
 ## Quick start
 
 Run these commands from the repository root with the virtual environment active.
