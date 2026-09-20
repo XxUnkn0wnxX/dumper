@@ -756,8 +756,10 @@ def _active_dedicated_python(venv: Path, *, environment_description: str) -> Pat
         ) from error
     if active_prefix != expected_prefix:
         raise BootstrapError(
-            f'WVD tooling requires the dedicated virtual environment {venv}, but this interpreter uses {sys.prefix}. '
-            f'Deactivate the current environment and rerun this command, or invoke {_venv_python(venv)} directly.'
+            f'WVD tooling requires the dedicated virtual environment {venv.relative_to(ROOT)}, '
+            'but another virtual environment is active. '
+            'Deactivate the current environment and rerun this command, or invoke '
+            f'{_venv_python(venv).relative_to(ROOT)} directly from the repository root.'
         )
     if not venv.is_dir():
         raise BootstrapError(
