@@ -6,9 +6,12 @@ Both manual dumper runs and full auto use the same browser setup. Before opening
 the configured test page, the launcher applies testing flags to suppress Chrome's
 first-run screens, startup promotions, notification onboarding, and supported
 help bubbles. It then force-stops Chrome and launches the page afresh using
-`am start --activity-new-task` targeting `com.android.chrome`, which asks Android
-to bring Chrome's task to the foreground. Keep the device unlocked; Android
-permission dialogs can still appear above the browser.
+`am start -f 0x10000000` (`FLAG_ACTIVITY_NEW_TASK`) targeting `com.android.chrome`,
+which asks Android to bring Chrome's task to the foreground. This intent flag has
+existed since API 1. If Android explicitly rejects the launch option, the dumper
+warns and tries one normal launch without the focus flag. Timeouts, connection
+failures, and permission errors do not trigger a second launch. Keep the device
+unlocked; Android permission dialogs can still appear above the browser.
 
 The target must be the selected, online Android device with `com.android.chrome`
 installed and enabled. This works through ADB; it does not depend on a Pixel model
@@ -162,6 +165,7 @@ as presumed Android fixes.
 - [Chrome 109 notification prompt controller](https://github.com/chromium/chromium/blob/109.0.5414.123/chrome/browser/notifications/android/java/src/org/chromium/chrome/browser/notifications/permissions/NotificationPermissionController.java): `permission_request_max_count` governs both the rationale and the controller's Android permission request.
 - [Android Chrome keyboard shortcuts](https://github.com/chromium/chromium/blob/109.0.5414.123/chrome/android/java/src/org/chromium/chrome/browser/KeyboardShortcuts.java): an unmodified F5 requests a normal reload of the current tab. The same route was checked in Chrome 69 and 153.
 - [Android's new-task launch behavior](https://developer.android.com/reference/android/content/Intent#FLAG_ACTIVITY_NEW_TASK): starts the activity in a task or brings its existing task to the foreground.
+- [ADB intent arguments](https://developer.android.com/tools/adb#IntentSpec): pass the numeric intent flags with `-f`; `am` does not provide a `--activity-new-task` option.
 - [Chrome 153 Android switches](https://github.com/chromium/chromium/blob/153.0.8010.52/chrome/browser/flags/android/java_templates/ChromeSwitches.java.tmpl) and [feature-engagement documentation](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/components/feature_engagement/README.md): startup and in-product-help controls.
 - [Chrome 153 startup promo gate](https://github.com/chromium/chromium/blob/153.0.8010.52/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedRootUiCoordinator.java) and [Android default-browser promo gate](https://github.com/chromium/chromium/blob/153.0.8010.52/chrome/browser/ui/android/default_browser_promo/java/src/org/chromium/chrome/browser/ui/default_browser_promo/DefaultBrowserPromoUtils.java): the Android code checks the dedicated suppression switches before showing these offers.
 - [Chrome 109 Privacy Sandbox feature definition](https://github.com/chromium/chromium/blob/109.0.5414.123/components/privacy_sandbox/privacy_sandbox_features.cc) and [prompt gate](https://github.com/chromium/chromium/blob/109.0.5414.123/chrome/browser/privacy_sandbox/privacy_sandbox_service.cc): the enabled suppression feature returns no required prompt; it is absent from Chrome 153 after that onboarding's retirement.

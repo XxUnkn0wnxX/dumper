@@ -499,14 +499,38 @@ def launch_test_page(device_id: str, logger, *, site_file=DEFAULT_SITE_FILE) -> 
         )
         _require_success(stop_result, 'Stopping Chrome before launch')
 
+        # FLAG_ACTIVITY_NEW_TASK brings Chrome's task forward. Android's `am`
+        # accepts this through -f; it has no --activity-new-task option.
+        launch_args = ('am', 'start', '-a', 'android.intent.action.VIEW',
+                       '-p', CHROME_PACKAGE)
         start_result = _adb_shell(
             adb,
             device_id,
-            shlex.join(('am', 'start', '-a', 'android.intent.action.VIEW',
-                        '-p', CHROME_PACKAGE, '--activity-new-task', '-d', url)),
+            shlex.join((*launch_args, '-f', '0x10000000', '-d', url)),
             'Opening the DRM test URL',
         )
-        _require_success(start_result, 'Opening the DRM test URL')
+        try:
+            _require_success(start_result, 'Opening the DRM test URL')
+        except BrowserSetupError as error:
+            # An explicit argument rejection happens before Android launches
+            # the activity. Retry once without the optional focus flags. Do
+            # not retry timeouts or transport failures: launch may have begun.
+            rejection = str(error).lower()
+            if not any(marker in rejection for marker in (
+                'unknown option', 'unrecognized option', 'unsupported option',
+                'unknown flag', 'unsupported flag', 'invalid flag',
+            )):
+                raise
+            logger.warning(
+                'Android rejected the Chrome focus option; trying one normal browser launch.'
+            )
+            start_result = _adb_shell(
+                adb,
+                device_id,
+                shlex.join((*launch_args, '-d', url)),
+                'Opening the DRM test URL without focus flags',
+            )
+            _require_success(start_result, 'Opening the DRM test URL without focus flags')
         logger.info(
             'Opened %s in Chrome on %s; autoplay is configured, but the page controls playback.',
             url,

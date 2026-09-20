@@ -80,6 +80,8 @@ class BrowserHelperTests(unittest.TestCase):
         if remote == 'am force-stop com.android.chrome':
             return self.result('')
         if remote.startswith('am start'):
+            if '--activity-new-task' in shlex.split(remote):
+                return self.result('Error: Unknown option --activity-new-task\n', returncode=1)
             return self.result('Starting: Intent { act=android.intent.action.VIEW }\n')
         self.fail(f'unexpected ADB command: {remote!r}')
 
@@ -152,8 +154,14 @@ class BrowserHelperTests(unittest.TestCase):
         self.assertEqual(remotes[-2], 'am force-stop com.android.chrome')
         self.assertTrue(remotes[-1].startswith('am start -a android.intent.action.VIEW'))
         start_args = shlex.split(remotes[-1])
-        self.assertEqual(start_args[-1], 'https://example.test/drm#fragment')
-        self.assertIn('--activity-new-task', start_args)
+        self.assertEqual(
+            start_args,
+            [
+                'am', 'start', '-a', 'android.intent.action.VIEW',
+                '-p', 'com.android.chrome', '-f', '0x10000000',
+                '-d', 'https://example.test/drm#fragment',
+            ],
+        )
         self.assertLess(remotes.index(remotes[-3]), remotes.index(remotes[-2]))
         write_call = next(
             (kwargs for command, kwargs in self.calls
@@ -186,6 +194,96 @@ class BrowserHelperTests(unittest.TestCase):
         for _command, kwargs in self.calls:
             self.assertIs(kwargs['shell'], False)
             self.assertEqual(kwargs['timeout'], 5)
+
+    def test_launch_retries_once_without_numeric_new_task_flag_on_explicit_rejection(self):
+        def unsupported_numeric_flag(command, **kwargs):
+            remote = command[4] if len(command) > 4 else ''
+            if remote.startswith('am start') and '-f' in shlex.split(remote):
+                self.calls.append((command, kwargs))
+                # Exit zero is intentional: _require_success must still treat
+                # the explicit Android error marker as a failed start.
+                return self.result('Error: Unknown option -f\n')
+            return self.run_command(command, **kwargs)
+
+        with mock.patch.object(browser, 'resolve_adb', return_value='/adb'), \
+                mock.patch.object(browser.subprocess, 'run', side_effect=unsupported_numeric_flag):
+            self.assertTrue(self.launch())
+
+        starts = [
+            shlex.split(command[4])
+            for command, _kwargs in self.calls
+            if len(command) > 4 and command[4].startswith('am start')
+        ]
+        self.assertEqual(len(starts), 2)
+        self.assertEqual(
+            starts[0],
+            [
+                'am', 'start', '-a', 'android.intent.action.VIEW',
+                '-p', 'com.android.chrome', '-f', '0x10000000',
+                '-d', 'https://example.test/drm#fragment',
+            ],
+        )
+        self.assertEqual(
+            starts[1],
+            [
+                'am', 'start', '-a', 'android.intent.action.VIEW',
+                '-p', 'com.android.chrome',
+                '-d', 'https://example.test/drm#fragment',
+            ],
+        )
+        self.assertTrue(all(command[0:4] == ['/adb', '-s', 'emulator-5554', 'shell']
+                            for command, _kwargs in self.calls
+                            if len(command) > 4 and command[4].startswith('am start')))
+
+    def test_launch_fallback_failure_does_not_retry_again(self):
+        def fallback_fails(command, **kwargs):
+            remote = command[4] if len(command) > 4 else ''
+            if remote.startswith('am start'):
+                self.calls.append((command, kwargs))
+                if '-f' in shlex.split(remote):
+                    return self.result('Error: Unknown option: -f\n')
+                return self.result('SecurityException: start denied\n', returncode=1)
+            return self.run_command(command, **kwargs)
+
+        with mock.patch.object(browser, 'resolve_adb', return_value='/adb'), \
+                mock.patch.object(browser.subprocess, 'run', side_effect=fallback_fails):
+            self.assertFalse(self.launch())
+
+        starts = [command[4] for command, _kwargs in self.calls
+                  if len(command) > 4 and command[4].startswith('am start')]
+        self.assertEqual(len(starts), 2)
+        self.assertFalse(any('Opened ' in call.args[0] for call in self.logger.info.call_args_list))
+
+    def test_launch_start_timeout_security_error_and_cancellation_do_not_retry(self):
+        cases = {
+            'security': self.result('SecurityException: blocked\n', returncode=1),
+            'timeout': subprocess.TimeoutExpired('/adb', 5),
+            'keyboard interrupt': KeyboardInterrupt(),
+        }
+        for label, start_failure in cases.items():
+            with self.subTest(label=label):
+                self.calls.clear()
+
+                def start_fails(command, **kwargs):
+                    remote = command[4] if len(command) > 4 else ''
+                    if remote.startswith('am start'):
+                        self.calls.append((command, kwargs))
+                        if isinstance(start_failure, BaseException):
+                            raise start_failure
+                        return start_failure
+                    return self.run_command(command, **kwargs)
+
+                with mock.patch.object(browser, 'resolve_adb', return_value='/adb'), \
+                        mock.patch.object(browser.subprocess, 'run', side_effect=start_fails):
+                    if label == 'keyboard interrupt':
+                        with self.assertRaises(KeyboardInterrupt):
+                            self.launch()
+                    else:
+                        self.assertFalse(self.launch())
+
+                starts = [command[4] for command, _kwargs in self.calls
+                          if len(command) > 4 and command[4].startswith('am start')]
+                self.assertEqual(len(starts), 1)
 
     def test_managed_flags_are_inserted_before_existing_end_of_options_marker(self):
         self.flags_content = 'chrome --keep --enable-features=Existing<Trial -- --passthrough\n'
