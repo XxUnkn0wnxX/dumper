@@ -42,6 +42,13 @@ matching archive is already cached; it is not a request to mount or inspect host
 storage. If no eligible row exists, the helper stops before target checks, cache
 work, release lookup, download, installation, or shell handoff.
 
+> [!IMPORTANT]
+> **Wait for Android to finish booting before running this helper or the dumper.**
+> Unlock the phone or emulator and confirm its home screen is visible and
+> responsive. ADB can report an attached device with state `device` before boot
+> finishes. The helper's online-device check does not verify that Android's home
+> screen or services are ready; check the device screen before continuing.
+
 No virtual environment or additional Python requirements are needed when ADB is
 installed on the system. You can replace `.venv/bin/python` in the examples with
 `python3` (or `py -3` on Windows). Using the dumper's environment lets the helper
@@ -107,8 +114,9 @@ adb version
 adb devices -l
 ```
 
-Wait until Android has finished booting, enable USB debugging when using a
-physical device, and accept its authorization prompt. A usable entry looks like:
+Wait until Android has finished booting and its unlocked home screen is visible
+and responsive. Enable USB debugging when using a physical device and accept
+its authorization prompt. An online ADB entry looks like:
 
 ```text
 List of devices attached

@@ -82,6 +82,12 @@ for setup; automatic WVD creation is not implemented yet.
 
 Run these commands from the repository root with the virtual environment active.
 
+> [!IMPORTANT]
+> **Wait for Android to finish booting before running either script.** Unlock the
+> phone or emulator and wait until its home screen is visible and responsive.
+> A device can appear as `device` in `adb devices` while Android is still booting;
+> that connection alone does not mean it is ready for Frida or the dumper.
+
 1. Connect the Android device, enable USB debugging, and accept its authorization
    prompt.
 2. Prepare and start Frida server using the
