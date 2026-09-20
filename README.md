@@ -29,6 +29,11 @@ automatic request-layout detection, and optional maintainer tools.
 | Frida | A running Android `frida-server` with root access and a version matching the host's Python `frida` package. |
 | Request layout | A recognized exported signature, or a verified manual layout override for the target library. |
 
+> **Emulator image:** in Android Studio, prefer **Services → Google APIs** for
+> dumper testing. Stock **Google Play Store** images typically lack `su` and block
+> `adb root`. Choose a root-capable debug image; `su` is unnecessary when
+> `adb root` works. See [image selection and root checks](tools/README.md#choose-an-emulator-image).
+
 Create the virtual environment and install [requirements.txt](requirements.txt)
 from the repository root:
 

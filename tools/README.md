@@ -36,6 +36,47 @@ installed on the system. You can replace `.venv/bin/python` in the examples with
 `python3` (or `py -3` on Windows). Using the dumper's environment lets the helper
 check its installed Python `frida` version when preparing the server.
 
+### Choose an emulator image
+
+For Android Studio emulator testing across API 28–33, prefer **Services → Google
+APIs** when selecting the system image. Root availability depends on the image's
+build configuration, not just its Android/API version.
+
+| Image choice | Root access for dumper testing |
+| --- | --- |
+| **Google APIs** | Preferred: select a root-capable `userdebug` or `eng` build and verify `adb root` after boot. A standalone `su` binary is not required. |
+| **Google Play Store** | Stock production images typically have no `su` and disallow `adb root`; they require separate rooting work before the helper can install the server. |
+
+Android documents the [root restriction on Play Store images](https://developer.android.com/studio/run/managing-avds#system-images).
+For the debug-root route, look for `ro.debuggable=1` and a `userdebug` or `eng`
+build. These properties belong to the image; they are not an AVD checkbox.
+The decisive check is a working root shell, as described in
+[AOSP's ADB root documentation](https://android.googlesource.com/platform/packages/modules/adb/+/HEAD/docs/dev/root.md).
+
+<details>
+<summary>🔎 Verify root after booting the emulator</summary>
+
+After installing ADB as described below, replace `emulator-5554` with the serial
+reported by `adb devices -l`:
+
+```sh
+adb -s emulator-5554 shell getprop ro.debuggable
+adb -s emulator-5554 shell getprop ro.build.type
+adb -s emulator-5554 root
+adb -s emulator-5554 wait-for-device
+adb -s emulator-5554 shell id
+```
+
+Expect `1`, `userdebug` (or `eng`), and finally `uid=0(root)`. `adb root` restarts
+the device's ADB daemon. If it reports `adbd cannot run as root in production
+builds`, use a root-capable image or root the device separately.
+
+Normal helper installation already tries `adb root` if existing root and `su`
+are unavailable. `--shell` only uses existing privileges, so run `adb root` first
+when you want a root shell on an image without `su`.
+
+</details>
+
 ### Install ADB on the computer
 
 Install Android SDK Platform-Tools globally or place its `platform-tools`
