@@ -12,15 +12,11 @@ ROOT = Path(__file__).resolve().parents[1]
 DOC_RELATIVE_PATHS = tuple(
     sorted(path.relative_to(ROOT) for path in (ROOT / "docs").glob("*.md"))
 )
-README_RELATIVE_PATHS = (
+DOCUMENT_RELATIVE_PATHS = (
     Path("README.md"),
-    Path("Helpers/README.md"),
-    Path("tools/README.md"),
     Path("archives/wks-keys/README.md"),
     *DOC_RELATIVE_PATHS,
 )
-DOCUMENT_RELATIVE_PATHS = README_RELATIVE_PATHS + (Path("tests.md"),)
-README_PATHS = tuple(ROOT / relative_path for relative_path in README_RELATIVE_PATHS)
 DOCUMENT_PATHS = tuple(ROOT / relative_path for relative_path in DOCUMENT_RELATIVE_PATHS)
 MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\((<[^>]+>|[^)\s]+)\)")
 MARKDOWN_HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)

@@ -38,6 +38,7 @@ See [testing and verified scope](docs/testing.md#verified-scope) for the evidenc
 | 📱 [Android, ADB, and root setup](docs/android-setup.md) | Android Studio installs for each OS, Platform-Tools/PATH setup, emulator images, root checks, and authorization. |
 | 🧰 [Frida server setup](docs/frida-setup.md) | `setup_frida.py` workflow, arguments, cache, foreground operation, cleanup, and cancellation. |
 | 🧬 [Protobuf schema and regeneration](docs/protobuf.md) | Regeneration arguments, runtime pinning, schema provenance, and archive references. |
+| 🧩 [Shared Python helpers](docs/helpers.md) | Maintainer reference for bootstrap, cancellation, session, process, and logging modules. |
 | 📦 [WVD generation](docs/wvd.md) | The strict `.venv-wvd` environment, recursive pair conversion, validation, and output replacement rules. |
 | 🧩 [Dumper operation](docs/dumper.md) | Device selection, test-page configuration, capture/output behavior, layout detection, and dumper arguments. |
 | 🌐 [Chrome browser setup](docs/chrome.md) | Onboarding suppression, autoplay flags, compatibility, and how to undo testing settings. |
