@@ -22,6 +22,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -71,6 +72,43 @@ _REJECTED_PIP_ENVIRONMENT = {
 
 class BootstrapError(RuntimeError):
     """The repository virtual environment cannot be safely initialized."""
+
+    def __init__(self, message: str):
+        super().__init__(_relative_message(message))
+
+
+def display_path(path: Path | str) -> str:
+    """Describe a path from the repo root without changing its execution path."""
+    try:
+        return os.path.relpath(path, ROOT)
+    except ValueError:
+        # Windows paths on a different drive have no relative representation.
+        return str(path)
+
+
+def _relative_message(message: str) -> str:
+    """Keep repository paths relative in our progress and error messages.
+
+    Internal paths stay absolute for checks and process execution. Include
+    escaped Windows paths because OS/subprocess exceptions may render repr().
+    Streamed child output and raw debug logs are not filtered; pip receives a
+    relative input path below. Captured diagnostics included in our displayed
+    exceptions use the same relative formatting as the surrounding message.
+    """
+    root = str(ROOT)
+    variants = {root, ROOT.as_posix(), root.replace('\\', '\\\\')}
+    for prefix in sorted(variants, key=len, reverse=True):
+        message = re.sub(
+            re.escape(prefix) + r'(?:\\\\|[/\\])',
+            '', message,
+        )
+        message = re.sub(re.escape(prefix) + r'(?=$|[\s\'\"),:])', '.', message)
+    return message
+
+
+def _print_status(message: str, **options) -> None:
+    """Apply the same display convention to every shared bootstrap stage."""
+    print(_relative_message(message), **options)
 
 
 @dataclass(frozen=True)
@@ -169,6 +207,7 @@ def _run_command(command: Sequence[str], purpose: str, *, timeout: int,
     try:
         result = run_logged_subprocess(
             list(command),
+            cwd=ROOT,
             text=True,
             capture_output=capture_output,
             timeout=timeout,
@@ -471,7 +510,9 @@ def _pip_install_command(python: Path, requirements_file: Path, *, dry_run: bool
     ]
     if dry_run:
         command.append('--dry-run')
-    return [*command, '--requirement', str(requirements_file)]
+    # All bootstrap subprocesses run from ROOT. Supplying the relative input
+    # also keeps pip's own repeated "from -r ..." diagnostics repo-relative.
+    return [*command, '--requirement', display_path(requirements_file)]
 
 
 def _clean_temporary_requirements(temporary: tempfile.TemporaryDirectory,
@@ -480,7 +521,7 @@ def _clean_temporary_requirements(temporary: tempfile.TemporaryDirectory,
     try:
         temporary.cleanup()
     except OSError as error:
-        print(
+        _print_status(
             f'Warning: could not remove temporary dependency preflight files for {context}: {error}',
             file=sys.stderr,
         )
@@ -504,7 +545,7 @@ def _preflight_and_install_requirements(python: Path, root: RootRequirements, *,
     installation_started = False
     try:
         requirements_file.write_text('\n'.join(requested) + '\n', encoding='utf-8')
-        print(f'Preflighting the complete requested dependency set for {context}...', flush=True)
+        _print_status(f'Preflighting the complete requested dependency set for {context}...', flush=True)
         _run_command(
             _pip_install_command(python, requirements_file, dry_run=True),
             f'Preflighting {requirements_label} requirements for {context}',
@@ -512,7 +553,7 @@ def _preflight_and_install_requirements(python: Path, root: RootRequirements, *,
             environment=environment,
             capture_output=False,
         )
-        print(f'Installing preflighted {requirements_label} requirements into {context}...', flush=True)
+        _print_status(f'Installing preflighted {requirements_label} requirements into {context}...', flush=True)
         installation_started = True
         _run_command(
             _pip_install_command(python, requirements_file, dry_run=False),
@@ -524,7 +565,7 @@ def _preflight_and_install_requirements(python: Path, root: RootRequirements, *,
     except KeyboardInterrupt:
         with ignore_interrupts():
             _clean_temporary_requirements(temporary, context=context)
-            print(
+            _print_status(
                 f'\nDependency initialization was cancelled. {context} may be partially changed; '
                 'rerun initialization or repair that virtual environment before continuing.',
                 file=sys.stderr,
@@ -577,7 +618,7 @@ def _cleanup_owned_creation(venv: Path, marker: Path, token: str, *,
     try:
         shutil.rmtree(venv)
     except OSError as error:
-        print(
+        _print_status(
             f'Warning: incomplete {environment_description} remains at {venv}: {error}. '
             'Repair or remove it manually before retrying.',
             file=sys.stderr,
@@ -587,7 +628,8 @@ def _cleanup_owned_creation(venv: Path, marker: Path, token: str, *,
 
 
 def _create_repository_venv(venv: Path, *,
-                            environment_description: str = 'Repository virtual environment') -> None:
+                            environment_description: str = 'Repository virtual environment',
+                            creator_python: Path | None = None) -> None:
     """Create one absent repository environment and clean only our interrupted work."""
     lower_description = environment_description[:1].lower() + environment_description[1:]
     try:
@@ -609,10 +651,10 @@ def _create_repository_venv(venv: Path, *,
             'It was left in place; repair or remove it manually before retrying.'
         ) from error
 
-    print(f'Creating {lower_description} at {venv}...', flush=True)
+    _print_status(f'Creating {lower_description} at {venv}...', flush=True)
     try:
         _run_command(
-            [sys.executable, '-I', '-m', 'venv', str(venv)],
+            [str(creator_python or sys.executable), '-I', '-m', 'venv', str(venv)],
             f'Creating {lower_description} at {venv}',
             timeout=VENV_TIMEOUT,
             capture_output=False,
@@ -623,12 +665,12 @@ def _create_repository_venv(venv: Path, *,
                 venv, marker, token, environment_description=lower_description,
             )
             if removed:
-                print(
+                _print_status(
                     f'\nVirtual-environment creation was cancelled; removed the incomplete {venv}.',
                     file=sys.stderr,
                 )
             else:
-                print(
+                _print_status(
                     f'\nVirtual-environment creation was cancelled; {venv} was left for manual repair.',
                     file=sys.stderr,
                 )
@@ -664,7 +706,7 @@ def _environment_python(venv: Path, *, environment_description: str,
                 f'{environment_description} path {venv} is not a normal directory. '
                 'It was not changed; repair or recreate it manually.'
             )
-        print(f'Reusing {environment_description.lower()} at {venv}.', flush=True)
+        _print_status(f'Reusing {environment_description.lower()} at {venv}.', flush=True)
     else:
         _create_repository_venv(venv, environment_description=environment_description)
         created = True
@@ -785,7 +827,7 @@ def _check_and_repair_requirements(python: Path, root_requirements: RootRequirem
         requirement.normalized_name == 'adbutils' and installed.get(requirement.name) is False
         for requirement in requirements
     ) and shutil.which('adb') is None:
-        print(
+        _print_status(
             f'Bundled ADB is skipped for host {target_machine}; all other Python setup continues. '
             'Install or build ADB manually and put it on PATH. See docs/android-setup.md#arm-hosts.',
             flush=True,
@@ -801,7 +843,7 @@ def _check_and_repair_requirements(python: Path, root_requirements: RootRequirem
             # its dependencies is absent. Resolve the same pinned full set once
             # so rerunning init.py can repair this case without blind upgrades.
             needs_repair = True
-            print('Installed packages failed pip check; preflighting dependency repair...', flush=True)
+            _print_status('Installed packages failed pip check; preflighting dependency repair...', flush=True)
     if needs_repair:
         # Do not let an interrupted install's ordinary pip-check failure block
         # its own repair. The full dry-run keeps every non-root installed
@@ -820,10 +862,107 @@ def _check_and_repair_requirements(python: Path, root_requirements: RootRequirem
         # Only one repair is attempted. A failed final check stops here.
         _pip_check(python, context=context, environment=_pip_environment())
     else:
-        print(f'{requirements_heading} already satisfy {context}; no package installation is needed.', flush=True)
+        _print_status(f'{requirements_heading} already satisfy {context}; no package installation is needed.', flush=True)
 
 
-def initialize_environment() -> Path:
+def _verify_venv_creator(creator: Path) -> None:
+    """Prove base Python can create a usable venv before removing a broken one."""
+    scratch = ROOT / '.tmp'
+    scratch.mkdir(exist_ok=True)
+    temporary = tempfile.TemporaryDirectory(prefix='venv-rebuild-check-', dir=scratch)
+    try:
+        probe = Path(temporary.name) / 'venv'
+        _run_command(
+            [str(creator), '-I', '-m', 'venv', str(probe)],
+            'Checking virtual-environment creation support before rebuilding',
+            timeout=VENV_TIMEOUT,
+        )
+        python = _venv_python(probe)
+        _fresh_venv_report(python, expected_prefix=probe)
+        _run_command(
+            [str(python), '-I', '-m', 'pip', '--version'],
+            'Checking pip in the temporary rebuild probe', timeout=PROBE_TIMEOUT,
+        )
+    finally:
+        with defer_interrupts():
+            temporary.cleanup()
+
+
+def _rebuild_corrupt_project_venv(venv: Path, *,
+                                 environment_description: str) -> None:
+    """Recreate only a broken, fixed project environment during explicit init.
+
+    Health checks are local: interpreter/configuration and pip check.
+    Network, resolver, timeout, and permission errors
+    never trigger deletion. Custom active environments are not owned here.
+    """
+    if venv not in (ROOT / VENV_NAME, ROOT / '.venv-wvd'):
+        return
+    if venv.is_symlink() or (venv.exists() and not venv.is_dir()):
+        raise BootstrapError(f'{environment_description} {venv} is not a normal directory; it was not changed.')
+    if not venv.exists():
+        return
+
+    environment = _pip_environment()
+    python = _venv_python(venv)
+    try:
+        try:
+            valid_files = all(stat.S_ISREG(path.stat().st_mode) for path in (venv / 'pyvenv.cfg', python))
+        except FileNotFoundError:
+            valid_files = False
+        if not valid_files:
+            raise BootstrapError('Python executable or pyvenv.cfg is missing.')
+        _reject_system_site_packages(venv, environment_description=environment_description)
+        _fresh_venv_report(python, expected_prefix=venv, environment_description=environment_description)
+        # A changed requirements pin or an uninstalled optional tool is an
+        # ordinary package-setup request. Only a broken installed dependency
+        # graph counts here; the normal resolver handles missing requirements.
+        _pip_check(python, context=f'{environment_description.lower()} {venv}', environment=environment)
+        return
+    except BootstrapError as error:
+        cause: BaseException | None = error
+        while cause is not None:
+            if isinstance(cause, subprocess.TimeoutExpired) or (
+                isinstance(cause, OSError) and not isinstance(cause, FileNotFoundError)
+            ):
+                raise error
+            cause = cause.__cause__
+        reason = str(error)
+
+    if _is_windows() and Path(sys.prefix).resolve() == venv.resolve():
+        raise BootstrapError(
+            f'Cannot rebuild {venv} while its Python is running on Windows; it was not changed. '
+            'Deactivate it and run init.py with system Python.'
+        )
+
+    # A base interpreter remains available even if the current process was
+    # started from the environment being replaced. Prove it can load venv
+    # before removing anything, and never choose a creator inside the target.
+    creator = Path(getattr(sys, '_base_executable', None) or sys.executable).resolve()
+    if creator == venv or venv in creator.parents:
+        raise BootstrapError(f'Cannot rebuild {venv} using its own Python; rerun init.py with system Python outside a venv.')
+    _run_command(
+        [str(creator), '-I', '-c', 'import venv'],
+        'Checking base Python before rebuilding the virtual environment',
+        timeout=PROBE_TIMEOUT,
+    )
+    _verify_venv_creator(creator)
+    _print_status(f'Rebuilding {environment_description.lower()} at {venv}: {reason}', flush=True)
+    try:
+        # Defer repeated Ctrl+C while removing the directory; a cancellation
+        # afterward leaves it absent so the next init can create it cleanly.
+        with defer_interrupts():
+            shutil.rmtree(venv)
+    except OSError as error:
+        raise BootstrapError(
+            f'Could not remove damaged environment {venv}: {error}. Close processes using it '
+            'and rerun init.py with system Python outside a venv.'
+        ) from error
+    _create_repository_venv(venv, environment_description=environment_description, creator_python=creator)
+
+
+def initialize_environment(*, use_active_environment: bool = True,
+                           rebuild_corrupt: bool = False) -> Path:
     """Initialize/check the selected venv and return its interpreter path.
 
     Active real environments are selected exactly as supplied, including a
@@ -831,10 +970,15 @@ def initialize_environment() -> Path:
     repository ``.venv``.  It never falls back to global pip.
     """
     root_requirements = _read_requirements()
-    if running_in_virtual_environment():
+    if rebuild_corrupt:
+        selected = Path(sys.prefix) if use_active_environment and running_in_virtual_environment() else _repository_venv()
+        _rebuild_corrupt_project_venv(
+            selected, environment_description='Repository virtual environment',
+        )
+    if use_active_environment and running_in_virtual_environment():
         python = Path(sys.executable)
-        context = f'active virtual environment {sys.prefix}'
-        print(f'Using {context}.', flush=True)
+        context = f'active virtual environment {display_path(sys.prefix)}'
+        _print_status(f'Using {context}.', flush=True)
         _fresh_venv_report(python, expected_prefix=None)
     else:
         # A missing repository environment necessarily needs the fixed
@@ -849,23 +993,34 @@ def initialize_environment() -> Path:
         python, root_requirements, context=context, report_missing_adb=True,
     )
 
-    print(f'Virtual environment ready: {python}.', flush=True)
+    _print_status(f'Virtual environment ready: {display_path(python)}.', flush=True)
     return python
 
 
-def initialize_dedicated_environment(*, venv_name: str, requirements_file: Path) -> Path:
+def initialize_dedicated_environment(*, venv_name: str, requirements_file: Path,
+                                     use_active_environment: bool = True,
+                                     rebuild_corrupt: bool = False) -> Path:
     """Check or create one fixed repository-local environment for incompatible tooling.
 
     A real active venv is accepted only when its actual ``sys.prefix`` equals
     the dedicated directory.  ``VIRTUAL_ENV`` is intentionally not considered:
     activation variables are shell hints and can be stale.
+    Explicit project initialization can ignore the active environment and
+    prepare this dedicated directory through its own verified interpreter.
     """
     venv = _dedicated_venv_path(venv_name)
     requirements_path = _dedicated_requirements_path(requirements_file)
     environment_description = 'Dedicated WVD virtual environment'
     context = f'dedicated WVD virtual environment {venv}'
+    if rebuild_corrupt:
+        if use_active_environment and running_in_virtual_environment():
+            # The normal generator must still reject a different active venv
+            # before any rebuild, package check, or other environment change.
+            _active_dedicated_python(venv, environment_description=environment_description)
+        _read_requirements(requirements_path, requirements_label='dedicated WVD')
+        _rebuild_corrupt_project_venv(venv, environment_description=environment_description)
 
-    if running_in_virtual_environment():
+    if use_active_environment and running_in_virtual_environment():
         # Do this before reading requirements or invoking pip: a caller in the
         # main .venv (or any custom venv) must never receive WVD packages.
         python = _active_dedicated_python(venv, environment_description=environment_description)
@@ -889,7 +1044,7 @@ def initialize_dedicated_environment(*, venv_name: str, requirements_file: Path)
     _check_and_repair_requirements(
         python, root_requirements, context=context, requirements_label='WVD',
     )
-    print(f'Virtual environment ready: {python}.', flush=True)
+    _print_status(f'Virtual environment ready: {display_path(python)}.', flush=True)
     return python
 
 
@@ -899,7 +1054,7 @@ def _help_requested(arguments: Sequence[str]) -> bool:
 
 def _relaunch(python: Path, entrypoint: Path, arguments: Sequence[str]) -> None:
     command = [str(python), str(entrypoint), *arguments]
-    print(f'Relaunching with {python}: {entrypoint.name}', flush=True)
+    _print_status(f'Relaunching with {display_path(python)}: {entrypoint.name}', flush=True)
     if not _is_windows():
         try:
             os.execv(str(python), command)
@@ -952,7 +1107,7 @@ def _reap_windows_child_after_interrupt(child: subprocess.Popen) -> None:
     try:
         child.wait(timeout=WINDOWS_RELAUNCH_REAP_TIMEOUT)
     except (OSError, subprocess.TimeoutExpired):
-        print(
+        _print_status(
             'Warning: could not reap the relaunched Windows Python process after cancellation; '
             'check Task Manager before retrying.',
             file=sys.stderr,

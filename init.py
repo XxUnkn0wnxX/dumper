@@ -1,27 +1,30 @@
 #!/usr/bin/env python3
-"""Prepare or check the dumper's Python environment without device operations."""
+"""Create, check, or repair the separate dumper and WVD Python environments."""
 
 import argparse
 import sys
 
-from Helpers.Bootstrap import BootstrapError, initialize_environment
+from Helpers.Bootstrap import BootstrapError, display_path
 from Helpers.CLI import ignore_interrupts, prepare_terminal
+from Helpers.WvdBootstrap import initialize_project_environments
 
 
 # ------------------------------------------------------------------------------
 # ENVIRONMENT INITIALIZATION ONLY
-# The shared helper respects an active custom venv, or creates/reuses .venv.
+# The shared helpers respect an active custom main venv, or create/reuse .venv,
+# and always prepare the isolated .venv-wvd environment for WVD tooling.
 # This entry point does not import Frida, connect to Android, or run a tool.
 # ------------------------------------------------------------------------------
 def main(argv: list[str] | None = None) -> int:
-    """Ensure project requirements and report dependency health, then exit."""
+    """Ensure both project environments and report dependency health, then exit."""
     try:
         prepare_terminal()
         parser = argparse.ArgumentParser(description=__doc__)
         parser.parse_args(argv)
-        interpreter = initialize_environment()
-        print(f'Python setup is ready: {interpreter}', flush=True)
-        print('Project requirements and pip check passed.', flush=True)
+        main_interpreter, wvd_interpreter = initialize_project_environments()
+        print(f'Main Python setup is ready: {display_path(main_interpreter)}', flush=True)
+        print(f'WVD Python setup is ready: {display_path(wvd_interpreter)}', flush=True)
+        print('Project and WVD requirements and pip checks passed.', flush=True)
         return 0
     except (BootstrapError, OSError) as error:
         print(f'error: {error}', file=sys.stderr)

@@ -29,6 +29,16 @@ The helper uses shared bootstrap behavior with a strict boundary:
   even if the shell's `VIRTUAL_ENV` still names the main environment.
 - `--help` works without an environment, dependencies, or setup.
 
+`init.py` prepares both environments in one command: the main requirements go
+to `.venv` or an accepted active custom main venv, and the WVD requirements go
+only to `.venv-wvd`. Healthy existing environments are checked without package
+mutation; a fixed repository environment with a broken interpreter/configuration
+or broken installed dependency graph is deleted and recreated from scratch.
+Ordinary missing requirements or changed pins use the dependency resolver. The
+normal dumper/bootstrap fallback prepares only the main `.venv`, while the WVD
+generator fallback prepares only `.venv-wvd`. Running the WVD generator while a
+main or custom venv is active still refuses before package or input-data work.
+
 The dedicated requirements file is [`requirements-wvd.txt`](../requirements-wvd.txt).
 The main dumper environment remains separate:
 

@@ -2,9 +2,10 @@
 
 [← Back to the Dumper README](../README.md) · [📱 Android setup](android-setup.md) · [🧰 Frida setup](frida-setup.md) · [🧪 Testing](testing.md)
 
-This guide owns repository initialization, the dumper virtual environment, and
-the regular Python requirements. Install the computer prerequisites first;
-after cloning, run project commands from the repository root.
+This guide owns repository initialization, the dumper virtual environment, the
+dedicated WVD environment, and their separate Python requirements. Install the
+computer prerequisites first; after cloning, run project commands from the
+repository root.
 The [Android setup guide](android-setup.md) owns Platform-Tools, emulator/root
 images, and device authorization; the [Frida setup guide](frida-setup.md) owns
 the server helper.
@@ -241,15 +242,16 @@ executable. The packaged wheel is used only when PATH does not provide ADB.
 ## Automatic environment setup
 
 **Recommended first step for a new checkout: run `init.py` before the dumper or
-tools.** This prepares Python dependencies and checks them without contacting
-Android or starting a server:
+tools.** This creates missing or checks/repairs existing Python environments
+and their separate requirements without contacting Android or starting a server:
 
 ```sh
 python3 init.py
 ```
 
-On Windows, run `py -3 init.py`. You can rerun this command whenever you want
-to check or repair the selected environment's main requirements.
+On Windows, run `py -3 init.py`. You can rerun this command to check both
+environments and repair incomplete ones. Healthy environments are reused
+without package mutation.
 
 The dumper, `full_auto.py`, `setup_frida.py`, and `regenerate_protobuf.py` share
 [`Helpers/Bootstrap.py`](../Helpers/Bootstrap.py) with `init.py`. As a fallback
@@ -273,44 +275,64 @@ Automatic setup uses the running Python interpreter to create the environment
 and detects the OS when selecting its executable: `bin/python` on macOS/Linux
 or `Scripts\python.exe` on Windows. Shell activation is unnecessary. The
 [WVD helper](wvd.md) uses the same platform handling with its separate
-`.venv-wvd` environment.
+`.venv-wvd` environment. The normal dumper/bootstrap fallback prepares only
+the main `.venv`; WVD generator fallback prepares only `.venv-wvd`.
 
-[`init.py`](../init.py) uses the same shared
-helper, installs missing or mismatched main requirements in the selected venv,
-and runs `pip check`. It uses an active custom venv when present; otherwise it
-creates or reuses `.venv`. It exits after reporting the result. A successful
-check confirms Python dependencies, including the bundled ADB fallback, not
-Android or Frida-server readiness.
+[`init.py`](../init.py) uses the shared helpers to create missing or check
+existing main and WVD environments, with separate requirements and `pip check`
+runs. It uses an active custom main venv when present; otherwise it creates or
+checks `.venv`. If `.venv-wvd` is active, it selects `.venv` for the main
+requirements and still checks the dedicated WVD environment. Healthy existing
+environments are checked without package mutation. Missing interpreter/config
+files or a failed check of the installed dependency graph cause a fixed
+repository environment to be deleted and recreated from scratch. Ordinary
+missing requirements or changed package pins use the dependency resolver instead.
+The helper uses Python's `shutil.rmtree()` on all three operating systems.
+A successful check confirms Python dependencies,
+including the bundled ADB fallback, not Android or Frida-server readiness.
 
 | Argument | Description | Default | Example usage |
 | --- | --- | --- | --- |
-| *(no option)* | Initialize the selected venv, ensure the main requirements, and check dependencies. | Setup and check | `python3 init.py` |
+| *(no option)* | Create missing or check/repair existing main and WVD environments and their separate requirements. | Setup and check | `python3 init.py` |
 | `-h`, `--help` | Show help without environment creation or package installation. | — | `python3 init.py --help` |
 
-**Any already active Python virtual environment is accepted**, including one
-with a custom name or location. Normal dumper/tool startup keeps using that
-interpreter without automatically changing its dependencies during
-initialization. Run `init.py` there or install the requirements manually as
-shown below. The Frida helper's separate
+**Any already active custom main Python virtual environment is accepted.**
+Normal dumper/tool startup keeps using that interpreter. Run `init.py` there to
+check its main requirements and the dedicated WVD environment, or install the
+requirements manually as shown below. The Frida helper's separate
 [version synchronization](frida-setup.md#host-python-package-synchronization)
 can still update its Frida packages before deployment.
 
+`frida` and `frida-tools` remain unpinned. A compatible Frida upgrade or downgrade
+by the setup helper is accepted and does not trigger a rebuild. Custom active
+environments receive the existing dependency repair checks and are never
+recursively deleted. Automatic deletion is limited to the real `.venv` and
+`.venv-wvd` directories in this checkout; symlinked directories are refused.
+If Windows reports files in use during removal, close processes using that
+environment and rerun `init.py` with system Python outside the venv.
+When the damaged environment is running `init.py` itself on Windows, setup
+stops before deleting it and asks for that system-Python rerun. Before any
+rebuild, a disposable `.tmp/` probe verifies that base Python can create an
+environment with working pip; missing OS venv support leaves the old one intact.
+
 Automatic setup uses the running Python 3 interpreter's `-m venv` command and
 the environment's own pip; it never installs into global site packages. An
-existing environment that satisfies the requirements is reused without a
-package installation. Installation does not request blanket upgrades, so it
-preserves an already compatible Frida version. Setup failures stop the command
-before its normal work begins. Ctrl+C cancels initialization cleanly; an
-existing environment is never deleted as cleanup.
+existing healthy environment is checked without package installation. A
+missing environment is created, and a broken fixed repository environment is
+deleted and recreated with only its own requirements. Setup failures stop the command
+before its normal work begins; network or dependency-resolution failures do not
+trigger a rebuild. Ctrl+C cancels initialization cleanly.
 
-When packages need changing, initialization resolves the full installed
+When an environment needs packages, initialization resolves the full installed
 dependency set first and holds unrelated packages at their current versions.
-An incompatible set stops before installation. A partial pip installation is
-not rolled back; rerun `init.py` to repair missing main requirements, or follow
-the reported dependency-conflict guidance. Automatic installation ignores pip
-configuration files to keep its destination inside the selected venv; index,
-proxy and certificate environment variables are preserved, while overrides
-that redirect installation or bypass dependency resolution are rejected.
+An incompatible set stops before installation. Automatic installation ignores
+pip configuration files to keep its destination inside the selected venv; index,
+proxy and certificate environment variables are preserved, while overrides that
+redirect installation or bypass dependency resolution are rejected.
+
+Bootstrap progress and error messages show repository paths relative to its
+root. Pip runs from that root with a relative `.tmp/.../requirements.txt` input,
+so its requirement-source messages use the same path convention.
 
 Restarting under the venv is local to the command: it does not activate the
 environment in your parent terminal. Continue using `python3 script.py`, invoke

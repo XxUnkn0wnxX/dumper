@@ -27,9 +27,11 @@ py -3 full_auto.py
 
 Shared startup checks for an already active custom virtual environment first;
 otherwise it creates or reuses the repository `.venv`. It installs or repairs
-requirements only when the selected environment needs them. Running `init.py`
-first makes that preparation and any dependency errors visible before device
-work. The controller launches both child CLIs from the repository root.
+requirements only when the selected environment needs them. The initialization
+stage also prepares the separate `.venv-wvd` through `init.py`; healthy
+environments are reused. See [initialization and rebuild behavior](setup.md#automatic-environment-setup).
+Running `init.py` first makes that preparation and any dependency errors visible
+before device work. The controller launches both child CLIs from the repository root.
 Normal use needs no compile step or `protoc`; the generated protobuf module is
 already included. See [protobuf maintenance](protobuf.md) only if regenerating it.
 

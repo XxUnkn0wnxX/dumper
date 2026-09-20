@@ -48,14 +48,18 @@ of `python3` in these commands.
 Install Python 3.10 or newer first. **Tested up to Python 3.14** (current
 development and regression checks use Python 3.14.0).
 **On initial setup, run `init.py` before the
-dumper or tools.** It creates or checks `.venv`, installs the requirements when
-needed, and exits without device work. It uses an already active custom venv
-instead when one is present.
+dumper or tools.** It creates missing or checks existing `.venv` and
+`.venv-wvd` environments, repairs incomplete environments when needed, and
+exits without device work. Healthy environments are checked without package
+mutation. An already active custom main venv is accepted; when `.venv-wvd` is
+active, `init.py` selects `.venv` for the main requirements so the two
+requirement sets stay separate.
 
 If you skip initialization, the dumper and tools have a shared bootstrap
-fallback: outside any venv they prepare and enter `.venv` automatically. An
-already active venv is used as-is; run `init.py` there to prepare or check its
-requirements. Full details are in the [setup guide](docs/setup.md).
+fallback: outside any venv they prepare and enter `.venv` automatically. That
+fallback is for the main requirements only; WVD generation falls back only to
+`.venv-wvd`. An already active venv is used as-is. Full details are in the
+[setup guide](docs/setup.md).
 
 For the experimental orchestrated workflow, run `python3 full_auto.py` after
 `init.py` (`py -3 full_auto.py` in Windows PowerShell); see the

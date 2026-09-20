@@ -51,7 +51,14 @@ regeneration checks are documented in the [protobuf guide](protobuf.md).
 .venv/bin/python -m unittest tests.test_full_auto tests.test_auto_processes tests.test_auto_session tests.test_auto_logging tests.test_auto_init tests.test_auto_frida -v
 .venv-wvd/bin/python -m unittest tests.test_generate_wvd -v
 .venv/bin/python -m unittest tests.test_wvd_bootstrap -v
+.venv/bin/python -m unittest tests.test_bootstrap_pip_output -v
 ```
+
+The pip-output checks run a real offline `--dry-run` against the interpreter's
+already-installed pip and create/remove a disposable venv under `.tmp/` to
+verify rebuild prerequisites. They do not install project packages or access
+Android, saved keys, or WVD outputs. Corruption/rebuild tests use temporary
+fixtures; public CLI help was also checked with both `-h` and `--help`.
 
 The WVD generator tests run under `.venv-wvd` because they exercise the pinned
 `pywidevine` dependency. The bootstrap-boundary tests run under the ordinary

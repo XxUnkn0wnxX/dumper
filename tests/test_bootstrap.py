@@ -30,7 +30,8 @@ class BootstrapTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name) / 'repository with spaces'
+        self.root.mkdir()
         (self.root / 'requirements.txt').write_text(
             '--only-binary=adbutils\n'
             'adbutils==2.12.0; platform_machine == "x86_64" or '
@@ -53,6 +54,9 @@ class BootstrapTests(unittest.TestCase):
     def make_existing_venv(self):
         self.python.parent.mkdir(parents=True)
         self.python.write_text('', encoding='utf-8')
+        (self.venv / 'pyvenv.cfg').write_text(
+            'include-system-site-packages = false\n', encoding='utf-8',
+        )
 
     def prefix_result(self, *, prefix=None):
         return Completed(stdout=json.dumps({
@@ -75,11 +79,12 @@ class BootstrapTests(unittest.TestCase):
     def call_is_pip(self, command, operation):
         return '-m' in command and 'pip' in command and operation in command
 
-    def standard_runner(self, *, initially_missing=False, create_file=False, target_machine='x86_64', adb_installed=True):
+    def standard_runner(self, *, initially_missing=False, create_file=False, target_machine='x86_64',
+                        adb_installed=True, frida_version='17.18.0', frida_tools_version='14.4.6'):
         packages = {
             'adbutils': '2.12.0' if adb_installed else None,
-            'frida': None if initially_missing else '17.18.0',
-            'frida-tools': '14.4.6',
+            'frida': None if initially_missing else frida_version,
+            'frida-tools': frida_tools_version,
             'protobuf': '7.36.2',
             'pycryptodome': '3.23.0',
         }
@@ -88,9 +93,13 @@ class BootstrapTests(unittest.TestCase):
         def run(command, **kwargs):
             command = list(command)
             if self.call_is_pip(command, 'install'):
+                requirements_file = Path(command[-1])
+                if not requirements_file.is_absolute():
+                    requirements_file = Path(kwargs['cwd']) / requirements_file
                 kwargs = {
                     **kwargs,
-                    'requirements_text': Path(command[-1]).read_text(encoding='utf-8'),
+                    'resolved_requirements_path': requirements_file,
+                    'requirements_text': requirements_file.read_text(encoding='utf-8'),
                 }
             calls.append((command, kwargs))
             if command[1:4] == ['-I', '-m', 'venv']:
@@ -129,12 +138,18 @@ class BootstrapTests(unittest.TestCase):
     def test_no_venv_creates_then_installs_in_order(self):
         runner, calls = self.standard_runner(initially_missing=True, create_file=True)
         with mock.patch.object(bootstrap_helper, 'running_in_virtual_environment', return_value=False), \
-                mock.patch.object(bootstrap_helper.subprocess, 'run', side_effect=runner):
+                mock.patch.object(bootstrap_helper.subprocess, 'run', side_effect=runner), \
+                redirect_stdout(io.StringIO()) as output:
             selected = bootstrap_helper.initialize_environment()
 
         self.assertEqual(selected, self.python)
         self.assertEqual(calls[0][0][0], sys.executable)
         self.assertEqual(calls[0][0][1:4], ['-I', '-m', 'venv'])
+        self.assertTrue(all(Path(kwargs['cwd']) == self.root for _command, kwargs in calls))
+        self.assertNotIn(str(self.root), output.getvalue())
+        self.assertIn('Creating repository virtual environment at .venv...', output.getvalue())
+        self.assertIn('repository virtual environment .venv', output.getvalue())
+        self.assertIn('Virtual environment ready: .venv/bin/python.', output.getvalue())
         install_calls = [
             (command, kwargs) for command, kwargs in calls if self.call_is_pip(command, 'install')
         ]
@@ -145,6 +160,11 @@ class BootstrapTests(unittest.TestCase):
         self.assertIn('--require-virtualenv', install[0])
         self.assertNotIn('--upgrade', install[0])
         self.assertEqual(install[1]['env']['PIP_CONFIG_FILE'], os.devnull)
+        for command, kwargs in install_calls:
+            self.assertFalse(Path(command[-1]).is_absolute())
+            self.assertEqual(
+                Path(kwargs['resolved_requirements_path']), Path(kwargs['cwd']) / command[-1],
+            )
 
     def test_existing_complete_venv_reuses_without_install(self):
         self.make_existing_venv()
@@ -160,6 +180,46 @@ class BootstrapTests(unittest.TestCase):
             kwargs for command, kwargs in calls if self.call_is_pip(command, 'check')
         )
         self.assertEqual(check_kwargs['env']['PIP_CONFIG_FILE'], os.devnull)
+
+    def test_rebuild_check_keeps_healthy_unpinned_frida_versions_without_installing(self):
+        self.make_existing_venv()
+        for frida_version, frida_tools_version in (
+            ('16.7.19', '13.7.19'),
+            ('17.18.1', '14.4.7'),
+        ):
+            with self.subTest(frida=frida_version, frida_tools=frida_tools_version):
+                runner, calls = self.standard_runner(
+                    frida_version=frida_version, frida_tools_version=frida_tools_version,
+                )
+                with mock.patch.object(bootstrap_helper, 'running_in_virtual_environment', return_value=False), \
+                        mock.patch.object(bootstrap_helper.subprocess, 'run', side_effect=runner):
+                    self.assertEqual(
+                        bootstrap_helper.initialize_environment(rebuild_corrupt=True), self.python,
+                    )
+
+                self.assertFalse(any(
+                    command[1:4] == ['-I', '-m', 'venv'] for command, _kwargs in calls
+                ))
+                self.assertFalse(any(
+                    self.call_is_pip(command, 'install') for command, _kwargs in calls
+                ))
+
+    def test_rebuild_never_deletes_a_custom_active_environment(self):
+        custom_venv = self.root / 'custom-environment'
+        custom_python = bootstrap_helper._venv_python(custom_venv)
+        runner, calls = self.standard_runner()
+        with mock.patch.object(bootstrap_helper, 'running_in_virtual_environment', return_value=True), \
+                mock.patch.multiple(
+                    bootstrap_helper.sys,
+                    prefix=str(custom_venv), base_prefix='/outside-python', executable=str(custom_python),
+                ), mock.patch.object(bootstrap_helper.subprocess, 'run', side_effect=runner), \
+                mock.patch.object(bootstrap_helper.shutil, 'rmtree') as rmtree:
+            self.assertEqual(
+                bootstrap_helper.initialize_environment(rebuild_corrupt=True), custom_python,
+            )
+
+        rmtree.assert_not_called()
+        self.assertFalse(any(command[1:4] == ['-I', '-m', 'venv'] for command, _kwargs in calls))
 
     def test_missing_requirement_installs_root_requirements(self):
         self.make_existing_venv()
@@ -360,11 +420,13 @@ class BootstrapTests(unittest.TestCase):
         self.venv.mkdir()
         with mock.patch.object(bootstrap_helper, 'running_in_virtual_environment', return_value=False), \
                 mock.patch.object(bootstrap_helper.subprocess, 'run') as runner:
-            with self.assertRaisesRegex(bootstrap_helper.BootstrapError, 'missing'):
+            with self.assertRaisesRegex(bootstrap_helper.BootstrapError, 'missing') as raised:
                 bootstrap_helper.initialize_environment()
 
         self.assertTrue(self.venv.is_dir())
         runner.assert_not_called()
+        self.assertIn('.venv', str(raised.exception))
+        self.assertNotIn(str(self.root), str(raised.exception))
 
     def test_bootstrap_is_noop_inside_any_real_venv(self):
         entrypoint = self.root / 'command.py'
