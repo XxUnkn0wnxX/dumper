@@ -8,11 +8,86 @@ not root an unrooted device. Wait until Android has finished booting and its
 unlocked home screen is visible and responsive before using either script; ADB
 can report `device` while Android services are still starting.
 
+For the main illustrated walkthrough, use VideoHelp's
+[Dumping Your own L3 CDM with Android Studio](https://forum.videohelp.com/threads/408031-Dumping-Your-own-L3-CDM-with-Android-Studio).
+The steps here are a brief backup for installing the tools and choosing an
+emulator image; use this repository's commands for this fork.
+
+## Install Android Studio
+
+For emulator setup, download [Android Studio](https://developer.android.com/studio)
+and follow Google's instructions for your computer. Check the linked OS and
+hardware requirements before choosing an installer.
+
+| Computer | Official installation guide | Basic steps |
+| --- | --- | --- |
+| Windows | [Windows installation](https://developer.android.com/studio/install#windows) | Download the Windows `.exe`, run it, then complete the Setup Wizard. |
+| macOS | [Mac installation](https://developer.android.com/studio/install#mac) | Choose the Apple Silicon or Intel download, open the `.dmg`, drag Android Studio to Applications, and launch it. |
+| Linux | [Linux installation](https://developer.android.com/studio/install#linux) | Extract the Linux `.tar.gz`, then launch `studio` from its `android-studio/bin/` directory. Follow Google's distribution-specific library requirements. |
+
+The latest Studio release may require a newer OS than this project's Python
+scripts. For older computers, check Google's
+[Studio archive](https://developer.android.com/studio/archive) for a compatible
+release and its requirements. Google currently lists Windows/Linux ARM hosts
+as unsupported for Android Studio; that is separate from the
+[ADB-only ARM setup](#arm-hosts).
+
+<details>
+<summary>📦 Optional Homebrew / Chocolatey installation</summary>
+
+If you followed the [package-manager setup](setup.md#install-python-and-git),
+you can install Studio through that manager instead of its website:
+
+```sh
+# macOS
+brew install --cask android-studio
+```
+
+```powershell
+# Windows: administrator PowerShell
+choco install androidstudio -y
+```
+
+These use the [Homebrew cask](https://formulae.brew.sh/cask/android-studio) and
+[Chocolatey package](https://community.chocolatey.org/packages/androidstudio).
+Package-manager releases can lag Google's download. Open Android Studio after
+installation and complete its Setup Wizard; installing the IDE alone does not
+create a ready Android emulator.
+
+</details>
+
+### Install the SDK components
+
+Open **SDK Manager** from the welcome screen's **More Actions** menu, or
+**Tools → SDK Manager** inside Studio. In **SDK Tools**, install **Android SDK
+Platform-Tools** and, when using an emulator, **Android Emulator**. Click
+**Apply** and complete the downloads. Google's
+[SDK Manager guide](https://developer.android.com/studio/intro/update#sdk-manager)
+describes these components and updates.
+
+Note the **Android SDK Location** shown there. Its `platform-tools` subfolder
+contains ADB; add that folder to `PATH` using the instructions below. Then
+create an emulator in **Device Manager** using the image guidance in the next
+section. For a physical device, you can use standalone Platform-Tools without
+installing Android Studio.
+
 ## Choose an emulator image
 
 For Android Studio emulator testing across API 28–33, prefer **Services → Google
 APIs** when selecting the system image. Root availability depends on the image's
 build configuration, not just its Android/API version.
+
+1. Open **Device Manager** in Android Studio and choose **Create Virtual Device**.
+2. Select a phone profile, then choose an Android release. This fork's capture
+   testing covers **Android 9–13 / API 28–33**.
+3. Select **Google APIs**, not **Google Play Store**, under **Services**. Older
+   Studio versions identify these in the image's name or target instead.
+   Download an image compatible with your computer's architecture.
+4. Finish creating the AVD and start it. Wait until the unlocked Android home
+   screen is fully responsive, then verify root below.
+
+See Google's [virtual-device guide](https://developer.android.com/studio/run/managing-avds)
+if your Studio version's menus differ.
 
 | Image choice | Root access for dumper testing |
 | --- | --- |
@@ -52,13 +127,66 @@ physical device, arrange working root access through `su` before using it.
 
 Install Android SDK Platform-Tools globally or place its `platform-tools`
 directory on your system `PATH`, so `adb version` works in a new terminal.
-Android Studio's SDK Manager can also install Platform-Tools.
+If you already installed them through Studio's SDK Manager, use that copy and
+add it to `PATH`; a second installation is unnecessary. Google's
+[Platform-Tools page](https://developer.android.com/tools/releases/platform-tools#downloads)
+provides separate downloads for all three desktop operating systems.
 
 | System | Installation |
 | --- | --- |
-| Windows | Download **SDK Platform-Tools for Windows** from [Android's official downloads](https://developer.android.com/tools/releases/platform-tools#downloads), extract it, and add the directory containing `adb.exe` to `PATH`. Physical devices may also need a manufacturer's [USB driver](https://developer.android.com/studio/run/oem-usb). |
+| Windows | Download **SDK Platform-Tools for Windows** from [Android's official downloads](https://developer.android.com/tools/releases/platform-tools#downloads), extract the complete folder, and add the directory containing `adb.exe` to `PATH`. Alternatively, run `choco install adb -y` in administrator PowerShell using the [Chocolatey ADB package](https://community.chocolatey.org/packages/adb). Physical devices may also need a manufacturer's [USB driver](https://developer.android.com/studio/run/oem-usb). |
 | macOS | Install the [Homebrew android-platform-tools cask](https://formulae.brew.sh/cask/android-platform-tools) with `brew install --cask android-platform-tools`, or use **SDK Platform-Tools for Mac** from [Android's downloads](https://developer.android.com/tools/releases/platform-tools#downloads). |
 | Linux | Download **SDK Platform-Tools for Linux** from [Android's downloads](https://developer.android.com/tools/releases/platform-tools#downloads) and add the extracted directory to `PATH`, or install your distribution's ADB package. For USB permissions, follow Android's [Linux device setup](https://developer.android.com/studio/run/device#setting-up). |
+
+<details>
+<summary>🐧 Linux package-manager ADB commands</summary>
+
+Use the row for your distribution. These install ADB from the distribution;
+Studio's SDK Manager or Google's archive supplies the complete Platform-Tools
+package.
+
+| Distribution | Command | Package reference |
+| --- | --- | --- |
+| Ubuntu / Debian / Linux Mint | `sudo apt update` then `sudo apt install adb` | [Ubuntu](https://packages.ubuntu.com/search?keywords=adb&searchon=names&exact=1) · [Debian](https://packages.debian.org/stable/adb) |
+| Fedora | `sudo dnf install android-tools` | [Fedora](https://packages.fedoraproject.org/pkgs/android-tools/android-tools/) |
+| Arch Linux | `sudo pacman -Syu android-tools` | [Arch](https://archlinux.org/packages/extra/x86_64/android-tools/) |
+
+Arch's `-Syu` also updates the system. Physical USB devices can require udev
+rules or group membership; follow the Linux device setup link above instead
+of running the dumper with `sudo`.
+
+</details>
+
+<details>
+<summary>🛤️ Add an SDK Manager or extracted Platform-Tools folder to PATH</summary>
+
+Use the actual folder containing `adb` / `adb.exe`, not the ZIP or its parent.
+For an SDK Manager install, copy **Android SDK Location** and append
+`platform-tools`. Keep the complete folder, including Windows DLLs.
+
+**Windows:** search Start for **Edit environment variables for your account**.
+Edit your user **Path**, choose **New**, and paste the full `platform-tools`
+folder path. Save the dialogs and open a new PowerShell window.
+
+**macOS:** for the usual SDK location, add this line to `~/.zshrc`:
+
+```sh
+export PATH="$HOME/Library/Android/sdk/platform-tools:$PATH"
+```
+
+**Linux:** for the usual SDK location, add this line to `~/.bashrc` (or
+`~/.zshrc` if using zsh):
+
+```sh
+export PATH="$HOME/Android/Sdk/platform-tools:$PATH"
+```
+
+Replace the example directory if you moved the SDK or used a standalone
+download, keeping it quoted when its path contains spaces. Open a new terminal
+after saving. See Google's [SDK environment-variable guide](https://developer.android.com/tools/variables).
+Package-manager installations normally expose `adb` on `PATH` already.
+
+</details>
 
 Check installation and authorization:
 

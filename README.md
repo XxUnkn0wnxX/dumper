@@ -17,8 +17,8 @@ tools.
 
 | Guide | Scope |
 | --- | --- |
-| 🧱 [Checkout and Python setup](docs/setup.md) | Automatic `.venv` initialization, custom environments, manual setup, and commands on macOS, Linux, and Windows. |
-| 📱 [Android, ADB, and root setup](docs/android-setup.md) | Platform-Tools, emulator images, root checks, authorization, and the bundled ADB fallback. |
+| 🧱 [Checkout and Python setup](docs/setup.md) | Install Python/Git with Homebrew, Chocolatey, or a Linux package manager; initialize `.venv` and run the tools. |
+| 📱 [Android, ADB, and root setup](docs/android-setup.md) | Android Studio installs for each OS, Platform-Tools/PATH setup, emulator images, root checks, and authorization. |
 | 🧰 [Frida server setup](docs/frida-setup.md) | `setup_frida.py` workflow, arguments, cache, foreground operation, cleanup, and cancellation. |
 | 🧬 [Protobuf schema and regeneration](docs/protobuf.md) | Regeneration arguments, runtime pinning, schema provenance, and archive references. |
 | 📦 [WVD generation](docs/wvd.md) | The strict `.venv-wvd` environment, recursive pair conversion, validation, and output replacement rules. |
@@ -31,6 +31,8 @@ tools.
 
 ## Quick start
 
+New computer? Start with [Python and Git installation](docs/setup.md#install-python-and-git)
+and [Android Studio / SDK setup](docs/android-setup.md#install-android-studio).
 The [setup guide](docs/setup.md) has complete checkout and environment commands.
 For a new checkout on macOS or Linux:
 
@@ -39,6 +41,9 @@ git clone --branch develop https://github.com/XxUnkn0wnxX/dumper.git
 cd dumper
 python3 init.py
 ```
+
+If the installation guide selected `python3.14` explicitly, use that in place
+of `python3` in these commands.
 
 Install Python 3.10 or newer first. **Tested up to Python 3.14** (current
 development and regression checks use Python 3.14.0).

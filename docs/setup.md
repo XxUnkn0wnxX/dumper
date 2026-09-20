@@ -3,13 +3,208 @@
 [← Back to the Dumper README](../README.md) · [📱 Android setup](android-setup.md) · [🧰 Frida setup](frida-setup.md) · [🧪 Testing](testing.md)
 
 This guide owns repository initialization, the dumper virtual environment, and
-the regular Python requirements. Run the commands from the repository root.
+the regular Python requirements. Install the computer prerequisites first;
+after cloning, run project commands from the repository root.
 The [Android setup guide](android-setup.md) owns Platform-Tools, emulator/root
 images, and device authorization; the [Frida setup guide](frida-setup.md) owns
 the server helper.
 
 Normal use has no compilation step. The repository includes the generated
 protobuf module; `protoc` is only needed for optional [maintainer regeneration](protobuf.md).
+
+## Install Python and Git
+
+For a new installation, prefer **Python 3.14**. The project requires Python
+3.10 or newer and is tested up to 3.14; your Linux distribution may provide an
+older compatible version. Install Git too, so the checkout command below works.
+If both are already installed, check their versions and skip the matching steps.
+
+| Computer | Installation route | Check Python |
+| --- | --- | --- |
+| macOS | Command Line Tools → Homebrew → `python@3.14` | `python3.14 --version` |
+| Windows | Administrator PowerShell → Chocolatey → `python314` | `py -3.14 --version` |
+| Linux | Your distribution's package manager | `python3 --version`, or `python3.14 --version` for the explicit 3.14 route |
+
+<details>
+<summary>🍎 macOS — Command Line Tools, Homebrew, and Python 3.14</summary>
+
+Open **Terminal**. Apple's **Command Line Tools are sufficient** for this
+setup; the full Xcode application is not required. Install the tools and wait
+for the graphical installer to finish:
+
+```sh
+xcode-select --install
+```
+
+If macOS says the tools are already installed, continue. See
+[Apple's Command Line Tools guide](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools/)
+and [Homebrew's requirements](https://docs.brew.sh/Installation#macos-requirements).
+
+If Homebrew is missing, run its [official installer](https://brew.sh/):
+
+```sh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+**Follow the installer's printed “Next steps” before continuing.** Those
+commands add Homebrew to your shell configuration and current `PATH`.
+The usual prefix is `/opt/homebrew` on Apple Silicon and `/usr/local` on Intel;
+use the commands printed for your installation. Confirm that `brew --version`
+works in a new Terminal window.
+
+Install the [Python 3.14 formula](https://formulae.brew.sh/formula/python@3.14)
+and Git, then verify them:
+
+```sh
+brew install python@3.14 git
+python3.14 --version
+python3.14 -m pip --version
+git --version
+```
+
+Use `python3.14 init.py` after cloning if another Python takes precedence over
+`python3` on your `PATH`. Homebrew's current support requirements may exclude
+older macOS releases, including Big Sur. Check those requirements before a
+fresh install; the [official Python macOS installers](https://www.python.org/downloads/macos/)
+are another option when their listed OS requirements match your computer.
+
+</details>
+
+<details>
+<summary>🪟 Windows — Chocolatey, optional GUI, and Python 3.14</summary>
+
+Open Start, search for **Windows PowerShell**, right-click it, and select
+**Run as administrator**. Accept the Windows elevation prompt. If Chocolatey
+is not installed, run these commands from its
+[official PowerShell installation instructions](https://docs.chocolatey.org/en-us/choco/setup/#install-with-powershellexe):
+
+```powershell
+Set-ExecutionPolicy Bypass -Scope Process -Force
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+```
+
+`-Scope Process` applies the execution-policy bypass only to this PowerShell
+session; it does not permanently change the machine's policy. Managed
+organization policies can still take precedence. The last command downloads
+and runs Chocolatey's official installer.
+
+Close that window and open a **new administrator PowerShell** so it sees
+Chocolatey's updated `PATH`. Install its
+[`python314`](https://community.chocolatey.org/packages/python314) and
+[`git`](https://community.chocolatey.org/packages/git) packages:
+
+```powershell
+choco --version
+choco install python314 git -y
+```
+
+The `python314` package selects the available 3.14 patch release. To add the
+optional graphical package manager, run
+[Chocolatey GUI's install command](https://docs.chocolatey.org/en-us/chocolatey-gui/setup/installation/)
+in that administrator window:
+
+```powershell
+choco install chocolateygui -y
+```
+
+Close the administrator window. Open a **normal PowerShell** for cloning and
+running this project, then verify:
+
+```powershell
+py -3.14 --version
+py -3.14 -m pip --version
+git --version
+```
+
+Use `py -3.14 init.py` after cloning to select 3.14 explicitly. The shorter
+`py -3` examples elsewhere select an installed Python 3 and may choose a
+different version if several are installed. See
+[Python's Windows guide](https://docs.python.org/3.14/using/windows.html).
+Project initialization and normal use do not need administrator PowerShell or
+a permanent execution-policy change.
+
+</details>
+
+<details>
+<summary>🐧 Linux — Ubuntu/Debian, Fedora, and Arch</summary>
+
+Use the package manager for your distribution. These commands install the
+distribution's Python, pip, Git, and virtual-environment support; the default
+Python version depends on the distribution and release.
+
+**Ubuntu / Debian / Linux Mint:**
+
+```sh
+sudo apt update
+sudo apt install python3 python3-venv python3-pip git
+```
+
+These are the official [Ubuntu Python](https://packages.ubuntu.com/search?keywords=python3&searchon=names&exact=1)
+and [venv](https://packages.ubuntu.com/search?keywords=python3-venv&searchon=names&exact=1) packages, with
+[Debian equivalents](https://packages.debian.org/stable/python3-venv).
+The version depends on your release: older releases may supply 3.12 or 3.13,
+while newer ones may already provide 3.14. You do not need to add an unofficial
+repository or mix testing packages into a stable system for 3.14.
+
+**Fedora:**
+
+Prefer the official
+[`python3.14` package](https://packages.fedoraproject.org/pkgs/python3.14/python3.14/),
+when available for your Fedora release, to select 3.14 explicitly:
+
+```sh
+sudo dnf install python3.14 git
+python3.14 --version
+python3.14 -m venv --help
+```
+
+Use `python3.14 init.py` after cloning. Its
+[library package](https://packages.fedoraproject.org/pkgs/python3.14/python3.14-libs/fedora-45.html)
+includes `venv` and `ensurepip`, so it creates pip inside the project environment;
+a system pip package for a different default Python is unnecessary for that route.
+
+If your release does not offer `python3.14`, use
+`sudo dnf install python3 python3-pip git` and check `python3 --version`.
+Use a Python 3.10–3.14 interpreter for the tested range; a rolling/development
+distribution's default may already be newer.
+
+**Arch Linux:**
+
+```sh
+sudo pacman -Syu python python-pip git
+```
+
+The Arch command also performs the normal full system update; review its
+transaction before confirming. On Fedora and Arch, `venv` comes with Python
+rather than a separate `python3-venv` package. See Arch's
+[`python` package](https://archlinux.org/packages/core/x86_64/python/) and
+[Git's Linux installation guide](https://git-scm.com/install/linux).
+
+For the default-interpreter commands, verify the interpreter and tools:
+
+```sh
+python3 --version
+python3 -m pip --version
+python3 -m venv --help
+git --version
+```
+
+If your distribution provides Python 3.10–3.13, that meets the project's
+minimum. Do not replace the system Python or change `/usr/bin/python3` just
+to select 3.14. A separately installed `python3.14` can run `init.py` or
+`-m venv` directly while the system interpreter stays in place. Python versions
+newer than 3.14 have not been validated by this project. Install project
+requirements inside a venv, as described below and in the
+[Python packaging guide](https://packaging.python.org/en/latest/guides/installing-using-pip-and-virtual-environments/).
+
+</details>
+
+Python installation does not install Android Studio or the Android SDK.
+Continue with [Android Studio installation](android-setup.md#install-android-studio)
+and [Platform-Tools / ADB](android-setup.md#install-adb-on-the-computer) for the
+Windows, macOS, and Linux instructions. A physical-device setup can use
+Platform-Tools without installing the full Android Studio IDE.
 
 ## Initialize a checkout
 
@@ -124,6 +319,10 @@ Python dependencies only; ADB, Android root access, and the optional `protoc`
 compiler still follow their dedicated guides. WVD tooling remains separate.
 
 ## Manual environment setup
+
+To select 3.14 explicitly, use `python3.14` on macOS/Linux or `py -3.14` on
+Windows for the environment-creation command. Once activated, `python` refers
+to that environment's interpreter.
 
 On macOS or Linux, run:
 
