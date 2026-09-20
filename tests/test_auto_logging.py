@@ -86,8 +86,48 @@ class AutoLoggingTests(unittest.TestCase):
 
         logged = (self.root / 'logs' / 'full_auto.log').read_text(encoding='utf-8')
         self.assertEqual(logged, stdout + stderr + timeout_stdout.decode() + timeout_stderr.decode())
-        self.assertEqual(console_out.getvalue(), stdout + timeout_stdout.decode())
-        self.assertEqual(console_err.getvalue(), stderr + timeout_stderr.decode())
+        self.assertEqual(console_out.getvalue(), '')
+        self.assertEqual(console_err.getvalue(), '')
+
+    def test_normal_progress_is_mirrored_but_raw_captured_adb_output_stays_off_console(self):
+        captured_stdout = b'ADB\x00stdout\xff\n'
+        captured_stderr = b'ADB stderr\x01\n'
+        console_out = io.StringIO()
+        console_err = io.StringIO()
+        with redirect_stdout(console_out), redirect_stderr(console_err):
+            with logging_helper.controller_logging(self.root):
+                print('normal progress')
+                logging_helper.log_captured_output(
+                    SimpleNamespace(stdout=captured_stdout, stderr=captured_stderr),
+                )
+                print('normal warning', file=os.sys.stderr)
+
+        self.assertEqual(console_out.getvalue(), 'normal progress\n')
+        self.assertEqual(console_err.getvalue(), 'normal warning\n')
+        self.assertEqual(
+            (self.root / 'logs' / 'full_auto.log').read_bytes(),
+            b'normal progress\n' + captured_stdout + captured_stderr + b'normal warning\n',
+        )
+
+    def test_raw_captured_output_is_preserved_in_plain_redirected_streams(self):
+        raw_stdout = b'child stdout\x00\xff\n'
+        raw_stderr = b'child stderr\x01\n'
+        stdout_bytes = io.BytesIO()
+        stderr_bytes = io.BytesIO()
+        stdout = io.TextIOWrapper(stdout_bytes, encoding='utf-8')
+        stderr = io.TextIOWrapper(stderr_bytes, encoding='utf-8')
+        try:
+            with mock.patch.dict(os.environ, {'DUMPER_AUTO_LOGGING': '1'}, clear=True), \
+                    mock.patch.object(logging_helper.sys, 'stdout', stdout), \
+                    mock.patch.object(logging_helper.sys, 'stderr', stderr):
+                logging_helper.log_captured_output(
+                    SimpleNamespace(stdout=raw_stdout, stderr=raw_stderr),
+                )
+            self.assertEqual(stdout_bytes.getvalue(), raw_stdout)
+            self.assertEqual(stderr_bytes.getvalue(), raw_stderr)
+        finally:
+            stdout.detach()
+            stderr.detach()
 
     def test_captured_output_is_unchanged_for_manual_runs_without_logging_flag(self):
         result = SimpleNamespace(stdout='manual stdout', stderr='manual stderr')

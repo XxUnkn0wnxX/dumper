@@ -242,6 +242,83 @@ class PosixPtyTests(unittest.TestCase):
                 except subprocess.TimeoutExpired:
                     pass
 
+    def test_full_auto_keeps_queries_in_raw_log_and_cancels_on_a_fresh_line(self):
+        self.helper.write_text(textwrap.dedent('''
+            import fcntl
+            import os
+            from pathlib import Path
+            import termios
+            import time
+            import tty
+            from types import SimpleNamespace
+            from unittest import mock
+            import full_auto
+            from Helpers.AutoLogging import log_captured_output
+
+            fcntl.ioctl(0, termios.TIOCSCTTY, 0)
+            os.tcsetpgrp(0, os.getpgrp())
+            tty.setraw(0)
+
+            class HarmlessJob:
+                error = None
+                def close(self):
+                    print('TEST_CHILD_CLEANED', flush=True)
+                    return True
+
+            def prepare(run):
+                log_captured_output(SimpleNamespace(
+                    stdout=b'List of devices attached\\n33\\nx86_64\\n1\\n',
+                    stderr=b'raw diagnostic\\x00\\xff\\n',
+                ))
+                run.serial, run.adb, run.api = 'emulator-5554', 'unused-adb', 33
+                print('Experimental full auto: emulator-5554 | API 33 | ABI x86_64', flush=True)
+
+            def start(run, role, _arguments):
+                run.processes[role] = HarmlessJob()
+
+            def wait(_run):
+                print('PTY_READY_TO_CANCEL', flush=True)
+                while True:
+                    time.sleep(1)
+
+            with mock.patch.object(full_auto, 'ROOT', Path(__file__).parent), \\
+                    mock.patch.object(full_auto.AutoRun, 'prepare_environment', prepare), \\
+                    mock.patch.object(full_auto.AutoRun, 'start_process', start), \\
+                    mock.patch.object(full_auto.AutoRun, 'wait_for_frida', wait):
+                raise SystemExit(full_auto.main([]))
+        '''), encoding='utf-8')
+        environment = os.environ.copy()
+        environment['PYTHONPATH'] = str(self.repo_root)
+        master, slave = pty.openpty()
+        process = None
+        output = bytearray()
+        try:
+            process = subprocess.Popen(
+                [sys.executable, str(self.helper)], cwd=self.repo_root, env=environment,
+                stdin=slave, stdout=slave, stderr=slave, start_new_session=True,
+            )
+            self.read_until(master, output, b'PTY_READY_TO_CANCEL\r\n')
+            os.write(master, b'\x03')
+            self.read_until(master, output, b'Cancelled; owned session cleanup has finished.\r\n')
+            self.assertEqual(self.wait_for_child(process), 130)
+            self.assertIn(b'API 33 | ABI x86_64\r\n', output)
+            self.assertNotIn(b'List of devices attached', output)
+            self.assertNotIn(b'raw diagnostic', output)
+            self.assertNotIn(b'\r\n33\r\n', output)
+            self.assertNotIn(b'^CStopping', output)
+            self.assertIn(b'\r\nStopping this session', output)
+            self.assertLess(output.index(b'TEST_CHILD_CLEANED'), output.index(b'Cancelled;'))
+            raw_log = (self.helper.parent / 'logs' / 'full_auto.log').read_bytes()
+            self.assertIn(b'List of devices attached\n33\nx86_64\n1\n', raw_log)
+            self.assertIn(b'raw diagnostic\x00\xff\n', raw_log)
+            self.assertEqual(list((self.helper.parent / '.tmp').glob('full-auto-*')), [])
+        finally:
+            os.close(slave)
+            os.close(master)
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+
 
 if __name__ == '__main__':
     unittest.main()

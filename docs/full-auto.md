@@ -100,16 +100,18 @@ files under `logs/`:
 | `logs/init.log` | Complete raw stdout and stderr from the shared initialization and bootstrap process. |
 | `logs/frida.log` | Complete raw stdout and stderr from the Frida child process. |
 | `logs/dumper.log` | Complete raw stdout and stderr from the dumper child process, including streaming RSA, build, and error output. |
-| `logs/full_auto.log` | Complete raw stdout and stderr from the full-auto controller, mirroring its console output. |
+| `logs/full_auto.log` | Complete raw stdout and stderr from the full-auto controller plus captured parent-subprocess diagnostics. |
 
 All four streams are retained without filtering, redaction, or truncation, so
 normal RSA, build, and error output remains available for diagnosis. The logs
 remain after success, Ctrl+C, or an error until the next full-auto startup
 overwrites them or the user purges them. The original terminal remains a live
-view of controller progress, results, and log paths while that controller
-output is mirrored to `logs/full_auto.log`. The repository's root `logs/`
-directory is gitignored. Manual setup and dumper runs keep their ordinary
-terminal output.
+view of controller progress, errors, results, and log paths; those controller
+messages and captured parent-subprocess diagnostics are retained in
+`logs/full_auto.log`. Captured subprocess output is routed exclusively to that
+log rather than printed into the controller console. The repository's root
+`logs/` directory is gitignored. Manual setup and dumper runs keep their
+ordinary terminal output.
 
 On successful pair verification, the controller waits three seconds for the
 child output to settle, then attempts

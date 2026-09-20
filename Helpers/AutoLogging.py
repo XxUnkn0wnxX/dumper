@@ -47,17 +47,16 @@ class _Tee:
             self.log.flush()
             self.terminal.flush()
 
-    def write_bytes(self, value):
+    def write_captured(self, value):
+        """Keep command diagnostics in the raw log without echoing to the UI."""
         with self.lock:
-            self.log.flush()
-            self.log.buffer.write(value)
-            self.log.buffer.flush()
-            buffer = getattr(self.terminal, 'buffer', None)
-            if buffer is not None:
-                buffer.write(value)
-                buffer.flush()
+            if isinstance(value, bytes):
+                self.log.flush()
+                self.log.buffer.write(value)
+                self.log.buffer.flush()
             else:
-                self.terminal.write(value.decode('utf-8', errors='replace'))
+                self.log.write(value)
+                self.log.flush()
 
     def __getattr__(self, name):
         return getattr(self.terminal, name)
@@ -123,8 +122,10 @@ def controller_logging(root: Path):
 def log_captured_output(result):
     """Include normally captured subprocess output in full-auto logs, uncut.
 
-    The caller still receives its original result for parsing. Ordinary manual
-    runs keep their existing terminal verbosity. Partial timeout output is also
+    The controller's captured diagnostics go only to its raw log, while its
+    own progress messages still appear in the terminal. Background children
+    have redirected streams and keep all output in their individual logs.
+    Manual runs keep their existing verbosity. Partial timeout output is also
     accepted because subprocess.TimeoutExpired exposes stdout/stderr.
     """
     if os.environ.get('DUMPER_AUTO_LOGGING') != '1' or getattr(result, '_auto_logged', False):
@@ -132,10 +133,10 @@ def log_captured_output(result):
     for name, stream in (('stdout', sys.stdout), ('stderr', sys.stderr)):
         value = getattr(result, name, None)
         if value:
+            if isinstance(stream, _Tee):
+                stream.write_captured(value)
+                continue
             if isinstance(value, bytes):
-                if isinstance(stream, _Tee):
-                    stream.write_bytes(value)
-                    continue
                 buffer = getattr(stream, 'buffer', None)
                 if buffer is not None:
                     buffer.write(value)

@@ -341,7 +341,7 @@ class AutoRun:
         if self.directory is None:
             return
         with ignore_interrupts():
-            print('Stopping this session\'s background processes and Frida server...', flush=True)
+            print('\nStopping this session\'s background processes and Frida server...', flush=True)
             initializer = self.processes.get('init')
             if initializer is not None:
                 self.close_process(initializer)
@@ -442,7 +442,7 @@ def run_controller(args):
         print(f'Success: saved client_id.bin and private_key.pem in {output}.', flush=True)
         return 0
     except KeyboardInterrupt:
-        print('\nCancelled; owned session cleanup has finished.', file=sys.stderr, flush=True)
+        print('Cancelled; owned session cleanup has finished.', file=sys.stderr, flush=True)
         return 130
     except (AutoError, ProcessError, setup_frida.SetupError, OSError, ValueError) as error:
         print(f'error: {error}', file=sys.stderr, flush=True)

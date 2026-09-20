@@ -495,6 +495,33 @@ class FullAutoTests(unittest.TestCase):
         logging_context.assert_called_once_with(full_auto.ROOT)
         run.assert_called_once()
 
+    def test_cleanup_starts_with_newline_before_status_message(self):
+        controller = self.make_controller()
+        controller.directory = self.root / '.tmp' / 'session'
+        controller.directory.mkdir()
+        with mock.patch.object(full_auto, 'print') as output:
+            controller.cleanup()
+
+        output.assert_called_once()
+        self.assertTrue(output.call_args.args[0].startswith('\nStopping this session'))
+        self.assertFalse(controller.directory.exists())
+
+    def test_run_controller_cancellation_reports_after_cleanup_without_leading_newline(self):
+        order = []
+
+        def cancelled():
+            order.append('cleanup_finished')
+            raise KeyboardInterrupt
+
+        args = SimpleNamespace(ver=None, adb='adb-fixture', device_id='pixel', startup_timeout=10)
+        controller = SimpleNamespace(run=cancelled)
+        with mock.patch.object(full_auto, 'AutoRun', return_value=controller), \
+                redirect_stderr(io.StringIO()) as stderr:
+            self.assertEqual(full_auto.run_controller(args), 130)
+
+        self.assertEqual(order, ['cleanup_finished'])
+        self.assertEqual(stderr.getvalue(), 'Cancelled; owned session cleanup has finished.\n')
+
     def test_frida_probe_keeps_raw_stdout_and_stderr_in_controller_log(self):
         def probe(_command, **options):
             options['stdout'].write(b'probe stdout\x00\xff\n')
