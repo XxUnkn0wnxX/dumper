@@ -84,6 +84,12 @@ Run the test-page configuration and ADB browser-launch regressions:
 .venv/bin/python -m unittest tests.test_browser tests.test_cdm_cli -v
 ```
 
+Run the capture-disconnection and shutdown regressions:
+
+```sh
+.venv/bin/python -m unittest tests.test_connection tests.test_cdm_cli -v
+```
+
 For the Frida setup helper's focused tests and live device checks, see the
 [helper guide](tools/README.md#cleanup-and-maintainer-checks). Its mocked tests
 are also included in the full suite above.
@@ -117,6 +123,9 @@ The suite uses simulated Frida devices to check:
 - Continuing with a working library when another library fails initialization.
 - Clean Ctrl+C shutdown during startup or the capture wait loop, including
   discovery-session cleanup without swallowing cancellation.
+- Selected-device loss, capture-session detachment, bounded agent health checks,
+  explicit disconnect logs, and cleanup without deleting saved output. These
+  tests simulate Frida events; they do not disconnect a real phone or stop ADB.
 - Actionable startup errors for missing Python dependencies, unreachable devices,
   stopped servers, and Frida connection failures, without hiding unrelated errors.
 - Optional ADB client reporting and separate host/server Frida versions, including

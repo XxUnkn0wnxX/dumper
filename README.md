@@ -111,6 +111,18 @@ Run these commands from the repository root with the virtual environment active.
    it stays running after saving a pair. Cancellation prints `Stopped by user.`
    and exits cleanly without a traceback, including during startup.
 
+If the selected phone/emulator, ADB transport, or Frida connection disconnects,
+the dumper prints **`Capture stopped for <device> (<id>): ... Exiting cleanly`**
+and exits without a traceback. It also stops if a capture session ends and its
+hooks are lost. Already saved files remain in `key_dumps/`. Reconnect the device,
+wait for its home screen, start Frida again if needed, and rerun the dumper.
+
+Connection notifications and local session state are checked once per second.
+A read-only Frida agent check also runs every five seconds with a two-second
+timeout to catch an unresponsive connection. This uses the existing capture
+connection and does not invoke ADB, reconnect, or restart services. Disconnects
+exit with status `1`; **Ctrl+C** remains a normal stop with status `0`.
+
 > **Need help setting up Android Studio?** See the illustrated walkthrough and
 > community discussions under [VideoHelp guides and references](#videohelp-guides-and-references).
 

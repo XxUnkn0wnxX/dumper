@@ -686,20 +686,24 @@ class InstallAndShellTests(unittest.TestCase):
     def test_windows_handoff_waits_and_exits_with_adb_status_without_execv(self):
         argv = ['/adb.exe', '-s', 'serial', 'shell', '-t', 'sh -c true']
         for returncode in (0, 7, 130):
+            child = mock.Mock()
+            child.wait.return_value = returncode
             with self.subTest(returncode=returncode), \
                     mock.patch.object(setup.sys, 'platform', 'win32'), \
                     mock.patch.object(setup.sys, 'stdout', mock.Mock()), \
                     mock.patch.object(setup.sys, 'stderr', mock.Mock()), \
                     mock.patch.object(
                         setup.subprocess,
-                        'run',
-                        return_value=Completed(returncode=returncode),
-                    ) as run, \
+                        'Popen',
+                        return_value=child,
+                    ) as popen, \
                     mock.patch.object(setup.os, 'execv') as execv:
                 with self.assertRaises(SystemExit) as exit_error:
                     setup.handoff_to_adb(argv, 'Windows ADB handoff')
             self.assertEqual(exit_error.exception.code, returncode)
-            run.assert_called_once_with(argv, check=False)
+            popen.assert_called_once_with(argv, shell=False)
+            child.wait.assert_called_once_with()
+            child.terminate.assert_not_called()
             execv.assert_not_called()
 
     def test_windows_handoff_reports_adb_startup_failure(self):
@@ -709,27 +713,81 @@ class InstallAndShellTests(unittest.TestCase):
                 mock.patch.object(setup.sys, 'stderr', mock.Mock()), \
                 mock.patch.object(
                     setup.subprocess,
-                    'run',
+                    'Popen',
                     side_effect=OSError('adb startup failed'),
-                ) as run, \
-                mock.patch.object(setup.os, 'execv') as execv:
-            with self.assertRaisesRegex(setup.SetupError, 'Windows ADB handoff: adb startup failed'):
+                ) as popen, \
+                    mock.patch.object(setup.os, 'execv') as execv:
+            with self.assertRaisesRegex(
+                    setup.SetupError,
+                    'Windows ADB handoff: ADB could not start: adb startup failed',
+            ):
                 setup.handoff_to_adb(argv, 'Windows ADB handoff')
-        run.assert_called_once_with(argv, check=False)
+        popen.assert_called_once_with(argv, shell=False)
         execv.assert_not_called()
 
     def test_windows_handoff_maps_ctrl_c_to_status_130_without_execv(self):
         argv = ['/adb.exe', '-s', 'serial', 'shell', '-t', 'sh -c true']
         with mock.patch.object(setup.sys, 'platform', 'win32'), \
                 mock.patch.object(setup.sys, 'stdout', mock.Mock()), \
-                mock.patch.object(setup.sys, 'stderr', mock.Mock()), \
-                mock.patch.object(setup.subprocess, 'run', side_effect=KeyboardInterrupt) as run, \
+                mock.patch.object(setup.sys, 'stderr', io.StringIO()) as stderr, \
+                mock.patch.object(setup.subprocess, 'Popen') as popen, \
                 mock.patch.object(setup.os, 'execv') as execv:
+            child = popen.return_value
+            child.wait.side_effect = [KeyboardInterrupt, None]
             with self.assertRaises(SystemExit) as exit_error:
                 setup.handoff_to_adb(argv, 'Windows ADB handoff')
         self.assertEqual(exit_error.exception.code, 130)
-        run.assert_called_once_with(argv, check=False)
+        popen.assert_called_once_with(argv, shell=False)
+        child.terminate.assert_called_once_with()
+        self.assertEqual(child.wait.call_args_list, [mock.call(), mock.call(timeout=5)])
+        self.assertIn('ADB session cancelled', stderr.getvalue())
         execv.assert_not_called()
+
+    def test_windows_handoff_reports_nonzero_session_without_claiming_disconnect(self):
+        argv = ['/adb.exe', '-s', 'serial', 'shell', '-t', 'sh -c true']
+        child = mock.Mock()
+        child.wait.return_value = 7
+        with mock.patch.object(setup.sys, 'platform', 'win32'), \
+                mock.patch.object(setup.sys, 'stdout', mock.Mock()), \
+                mock.patch.object(setup.sys, 'stderr', io.StringIO()) as stderr, \
+                mock.patch.object(setup.subprocess, 'Popen', return_value=child):
+            with self.assertRaises(SystemExit) as exit_error:
+                setup.handoff_to_adb(argv, 'Windows ADB handoff')
+        self.assertEqual(exit_error.exception.code, 7)
+        self.assertIn('ADB session ended with exit status 7', stderr.getvalue())
+        self.assertIn('If the Android device disconnected', stderr.getvalue())
+        self.assertNotIn('device disconnected.', stderr.getvalue())
+
+    def test_windows_handoff_reaps_child_when_wait_fails(self):
+        argv = ['/adb.exe', '-s', 'serial', 'shell', '-t', 'sh -c true']
+        child = mock.Mock()
+        child.wait.side_effect = [OSError('pipe closed'), None]
+        with mock.patch.object(setup.sys, 'platform', 'win32'), \
+                mock.patch.object(setup.sys, 'stdout', mock.Mock()), \
+                mock.patch.object(setup.sys, 'stderr', mock.Mock()), \
+                mock.patch.object(setup.subprocess, 'Popen', return_value=child):
+            with self.assertRaisesRegex(setup.SetupError, 'ADB session wait failed: pipe closed'):
+                setup.handoff_to_adb(argv, 'Windows ADB handoff')
+        child.terminate.assert_called_once_with()
+        self.assertEqual(child.wait.call_args_list, [mock.call(), mock.call(timeout=5)])
+
+    def test_windows_handoff_kills_child_if_bounded_termination_does_not_reap(self):
+        argv = ['/adb.exe', '-s', 'serial', 'shell', '-t', 'sh -c true']
+        child = mock.Mock()
+        child.wait.side_effect = [KeyboardInterrupt, subprocess.TimeoutExpired(argv, 5), None]
+        with mock.patch.object(setup.sys, 'platform', 'win32'), \
+                mock.patch.object(setup.sys, 'stdout', mock.Mock()), \
+                mock.patch.object(setup.sys, 'stderr', mock.Mock()), \
+                mock.patch.object(setup.subprocess, 'Popen', return_value=child):
+            with self.assertRaises(SystemExit) as exit_error:
+                setup.handoff_to_adb(argv, 'Windows ADB handoff')
+        self.assertEqual(exit_error.exception.code, 130)
+        child.terminate.assert_called_once_with()
+        child.kill.assert_called_once_with()
+        self.assertEqual(
+            child.wait.call_args_list,
+            [mock.call(), mock.call(timeout=5), mock.call(timeout=5)],
+        )
 
     def test_existing_server_requires_a_real_version(self):
         with mock.patch.object(setup, 'run_root', return_value=Completed(stdout='17.18.0\n')):

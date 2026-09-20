@@ -17,6 +17,7 @@ from Crypto.PublicKey import RSA
 # and run tools/regenerate_protobuf.py to rebuild them; see Helpers/README.md.
 from Helpers.wv_proto2_pb2 import SignedLicenseRequest
 from Helpers.DeviceSelection import get_android_api_level, select_android_device
+from Helpers.Diagnostics import _run_cancellable
 
 
 # ------------------------------------------------------------------------------
@@ -224,6 +225,7 @@ class Device:
         self._matching_pair_save_attempted = False
         self._no_pair_warning_emitted = False
         self._reported_client_cdm_versions = set()
+        self._capture_sessions = []
         self.widevine_libraries = module_names
         self.usb_device = select_android_device(device_id)
         self.name = self.usb_device.name
@@ -438,7 +440,7 @@ class Device:
             # End the discovery attachment even when setup or module lookup is
             # interrupted. Cleanup errors must not replace the original failure.
             try:
-                process.detach()
+                _run_cancellable(process.detach)
             except Exception as detach_error:
                 self.logger.warning(
                     'Failed to detach discovery session for process %s: %s',
@@ -460,19 +462,41 @@ class Device:
             script.on('message', self.on_message)
             script.load()
             script.exports.hooklibfunctions(library)
+            if not hasattr(self, '_capture_sessions'):
+                self._capture_sessions = []
+            self._capture_sessions.append((session, script))
             return session
-        except Exception as error:
+        except BaseException as error:
             # Detach a partially initialized session without replacing the original
             # hook error if cleanup itself fails.
             if session is not None:
                 try:
-                    session.detach()
+                    _run_cancellable(session.detach)
                 except Exception as detach_error:
                     self.logger.warning(
                         'Failed to detach unsuccessful hook session for process %s: %s',
                         process,
                         detach_error,
                     )
+            if not isinstance(error, Exception):
+                raise
             raise HookError(
                 f'Failed to hook library {library!r} in process {process!r}: {error}'
             ) from error
+
+    @property
+    def capture_sessions(self):
+        """Keep both sessions and scripts alive for monitoring and cleanup."""
+        return tuple(getattr(self, '_capture_sessions', ()))
+
+    def close(self):
+        """Release capture hooks on shutdown without touching saved output."""
+        sessions = self.capture_sessions
+        self._capture_sessions = []
+        for session, _script in sessions:
+            try:
+                _run_cancellable(session.detach)
+            except (Exception, KeyboardInterrupt) as error:
+                # Lost transports are expected here. Cleanup must not turn a
+                # clean disconnect/Ctrl+C into a second failure or traceback.
+                self.logger.debug('Capture session cleanup unavailable: %s', error)

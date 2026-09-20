@@ -17,20 +17,13 @@ from Helpers.Browser import DEFAULT_SITE_FILE, launch_test_page
 # dependency import failures are deferred; broken project imports still surface.
 DEPENDENCY_IMPORT_ERROR = None
 FRIDA_CONNECTION_ERRORS = ()
+CAPTURE_DISCONNECT_ERRORS = ()
 try:
     import frida
-    FRIDA_CONNECTION_ERRORS = (
-        frida.ServerNotRunningError,
-        frida.TransportError,
-        frida.TimedOutError,
-        frida.PermissionDeniedError,
-        frida.ProtocolError,
-        frida.ProcessNotFoundError,
-        frida.ProcessNotRespondingError,
-        frida.InvalidOperationError,
-        frida.NotSupportedError,
-        frida.OperationCancelledError,
+    from Helpers.Connection import (
+        CaptureConnection, CaptureDisconnected, FRIDA_CONNECTION_ERRORS,
     )
+    CAPTURE_DISCONNECT_ERRORS = (CaptureDisconnected,)
     from Helpers.Device import Device, HookError
     from Helpers.Diagnostics import report_adb_version, report_frida_versions
     from Helpers.DeviceSelection import DeviceSelectionError, FRIDA_CONNECTION_GUIDANCE
@@ -112,68 +105,89 @@ def main():
     except (DeviceSelectionError, HookError) as error:
         parser.error(str(error))
         return
-    logger.info('Connected to %s (%s)', device.name, device.usb_device.id)
-    report_frida_versions(device.usb_device, logger)
-    logger.info('Scanning all processes')
+    ready = False
+    try:
+        logger.info('Connected to %s (%s)', device.name, device.usb_device.id)
+        report_frida_versions(device.usb_device, logger)
+        logger.info('Scanning all processes')
 
-    # Scan processes whose names contain 'drm', then try each requested library
-    # found in them. A library's hook failure does not prevent trying another one.
-    hooked_libraries = 0
-    hook_errors = []
-    for process in device.usb_device.enumerate_processes():
-        if 'drm' in process.name:
-            for library in device.find_widevine_process(process.name):
-                try:
-                    device.hook_to_process(process.name, library)
-                    hooked_libraries += 1
-                except HookError as error:
-                    hook_errors.append(str(error))
-                    logger.error('%s', error)
-    # Require at least one initialized library before showing playback guidance.
-    # Hook setup alone does not establish that a matching key pair was captured.
-    if not hooked_libraries:
-        if hook_errors:
-            parser.error(
-                'No Widevine libraries were hooked. Hook failures: '
-                + '; '.join(hook_errors) + '. ' + FRIDA_CONNECTION_GUIDANCE
+        # Scan processes whose names contain 'drm', then try each requested library
+        # found in them. A library's hook failure does not prevent trying another one.
+        hooked_libraries = 0
+        hook_errors = []
+        for process in device.usb_device.enumerate_processes():
+            if 'drm' in process.name:
+                for library in device.find_widevine_process(process.name):
+                    try:
+                        device.hook_to_process(process.name, library)
+                        hooked_libraries += 1
+                    except HookError as error:
+                        hook_errors.append(str(error))
+                        logger.error('%s', error)
+        # Require at least one initialized library before showing playback guidance.
+        # Hook setup alone does not establish that a matching key pair was captured.
+        if not hooked_libraries:
+            if hook_errors:
+                parser.error(
+                    'No Widevine libraries were hooked. Hook failures: '
+                    + '; '.join(hook_errors) + '. ' + FRIDA_CONNECTION_GUIDANCE
+                )
+            else:
+                parser.error(
+                    'No Widevine libraries were hooked. Check the target process '
+                    'and --module-name values, then retry.'
+                )
+            return
+        logger.info('Functions hooked; waiting for Widevine playback.')
+        # Launch only after a library is ready to capture. Browser setup is optional:
+        # its helper reports expected ADB/Chrome errors while capture stays active.
+        if args.no_browser:
+            logger.info(
+                'Automatic browser launch disabled. Open a Widevine test page on '
+                'the selected Android device; the configured URL is in %s.', args.site_file,
             )
-        else:
-            parser.error(
-                'No Widevine libraries were hooked. Check the target process '
-                'and --module-name values, then retry.'
+        elif not launch_test_page(device.usb_device.id, logger, site_file=args.site_file):
+            logger.warning(
+                'Capture remains active. Open a Widevine test page manually on '
+                'the selected Android device; check %s for the configured URL.', args.site_file,
             )
-        return
-    logger.info('Functions hooked; waiting for Widevine playback.')
-    # Launch only after a library is ready to capture. Browser setup is optional:
-    # its helper reports expected ADB/Chrome errors while capture stays active.
-    if args.no_browser:
-        logger.info(
-            'Automatic browser launch disabled. Open a Widevine test page on '
-            'the selected Android device; the configured URL is in %s.', args.site_file,
-        )
-    elif not launch_test_page(device.usb_device.id, logger, site_file=args.site_file):
-        logger.warning(
-            'Capture remains active. Open a Widevine test page manually on '
-            'the selected Android device; check %s for the configured URL.', args.site_file,
-        )
-    return device
+        ready = True
+        return device
+    finally:
+        if not ready:
+            device.close()
 
 
 # ------------------------------------------------------------------------------
 # PROCESS LIFETIME
 # Keep Python running after successful setup so Frida can deliver capture callbacks.
-# Check capture progress without changing the agent or its streamed output.
+# Monitor transport/session health as well as capture progress while waiting.
 # Tests call main() directly and therefore do not enter this wait loop.
 # ------------------------------------------------------------------------------
 def run():
+    device = None
+    connection = None
     try:
         device = main()
+        if device is None:
+            return 1
+        connection = CaptureConnection(
+            device.usb_device, device.capture_sessions, logging.getLogger('main'),
+        )
         while True:
             time.sleep(1)
+            connection.check()
             device.warn_if_no_pair()
     except KeyboardInterrupt:
         logging.getLogger('main').info('Stopped by user.')
         return 0
+    except CAPTURE_DISCONNECT_ERRORS as error:
+        logging.getLogger('main').warning(
+            'Capture stopped for %s (%s): %s. Exiting cleanly; saved files are retained. '
+            'Reconnect the device, wait for its home screen, restart Frida if needed, '
+            'then rerun the dumper.', device.name, device.usb_device.id, error,
+        )
+        return 1
     except FRIDA_CONNECTION_ERRORS as error:
         # Discovery can succeed just before the device/server disappears. Keep
         # expected Frida failures from scanning/attachment out of tracebacks,
@@ -192,6 +206,11 @@ def run():
             '%s: %s. %s', reason, error, FRIDA_CONNECTION_GUIDANCE,
         )
         return 1
+    finally:
+        if connection is not None:
+            connection.close()
+        if device is not None:
+            device.close()
 
 
 if __name__ == '__main__':

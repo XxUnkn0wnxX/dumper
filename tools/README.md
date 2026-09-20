@@ -239,13 +239,19 @@ generic_x86_64:/data/local/tmp # ./frida-server
 
 On macOS and Linux, the host Python process hands the terminal to ADB and is
 replaced before this line appears; Python does not poll or wait around the
-session. On Windows, Python runs ADB with inherited input/output and waits only
-as a minimal status-preserving compatibility shim; ADB still owns the terminal.
-The line is a launch indication, not an idle prompt. The server has **no startup
-timeout** and does not use `--daemonize`, so its output and startup errors remain
-visible while ADB waits for it to exit. In the default mode and `--shell`, press
-**Ctrl+C** in this terminal to stop Frida; the real root prompt appears only
-after Frida exits. Native Windows terminal behavior remains unverified.
+session. On Windows, Python owns a direct ADB child only as a status-preserving
+compatibility shim: ADB inherits the terminal, the healthy session has no
+overall timeout, and Python waits until ADB exits. If the Windows ADB session
+ends nonzero, setup reports the exit status without assuming that it proves a
+device disconnect; reconnect the device if needed and inspect the ADB/Frida
+output before retrying. Host Ctrl+C or a wait error performs bounded child
+termination/reaping so a cancelled setup does not intentionally leave its ADB
+child behind. The line is a launch indication, not an idle prompt. The server
+has **no startup timeout** and does not use `--daemonize`, so its output and
+startup errors remain visible while ADB waits for it to exit. In the default
+mode and `--shell`, press **Ctrl+C** in this terminal to stop Frida; the real
+root prompt appears only after Frida exits. Native Windows terminal behavior
+remains unverified.
 Keep that terminal open and run the dumper from a second host terminal:
 
 ```sh

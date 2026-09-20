@@ -56,9 +56,21 @@ class HookLifecycleTests(unittest.TestCase):
         self.assertIs(device.hook_to_process('drm_process', 'libwvhidl.so'), session)
 
         session.detach.assert_not_called()
+        self.assertEqual(device.capture_sessions, ((session, script),))
         script.on.assert_called_once_with('message', device.on_message)
         script.load.assert_called_once_with()
         script.exports.hooklibfunctions.assert_called_once_with('libwvhidl.so')
+
+    def test_hook_interruption_releases_partial_session_without_wrapping(self):
+        session = mock.Mock()
+        session.create_script.return_value.load.side_effect = KeyboardInterrupt
+        device = self.make_device(session)
+
+        with self.assertRaises(KeyboardInterrupt):
+            device.hook_to_process('drm_process', 'libwvhidl.so')
+
+        session.detach.assert_called_once_with()
+        self.assertEqual(device.capture_sessions, ())
 
 
 # ---------------------------------------------------------------------------
@@ -134,12 +146,15 @@ class CdmCommandLineTests(unittest.TestCase):
         adb_patch = mock.patch.object(dump_keys, 'report_adb_version')
         frida_patch = mock.patch.object(dump_keys, 'report_frida_versions')
         browser_patch = mock.patch.object(dump_keys, 'launch_test_page', return_value=True)
+        connection_patch = mock.patch.object(dump_keys, 'CaptureConnection')
         self.addCleanup(adb_patch.stop)
         self.addCleanup(frida_patch.stop)
         self.addCleanup(browser_patch.stop)
+        self.addCleanup(connection_patch.stop)
         self.adb_report = adb_patch.start()
         self.frida_report = frida_patch.start()
         self.browser_launch = browser_patch.start()
+        self.connection_class = connection_patch.start()
 
     def make_cli_device(self, processes=(), libraries=()):
         # Materialize supplied iterables as predictable process and library
@@ -373,7 +388,23 @@ class CdmCommandLineTests(unittest.TestCase):
                 self.assertLogs('main', level='INFO'):
             self.assertEqual(dump_keys.run(), 0)
         device.warn_if_no_pair.assert_called_once_with()
+        self.connection_class.return_value.check.assert_called_once_with()
+        self.connection_class.return_value.close.assert_called_once_with()
+        device.close.assert_called_once_with()
         self.assertEqual(wait.call_args_list, [mock.call(1), mock.call(1)])
+
+    def test_startup_failure_releases_previously_installed_hooks(self):
+        device = self.make_cli_device(
+            [SimpleNamespace(name='drm_process')], ['libwvhidl.so'],
+        )
+        self.browser_launch.side_effect = KeyboardInterrupt
+        with mock.patch.object(sys, 'argv', ['dump_keys.py']), \
+                mock.patch.object(dump_keys, 'Device', return_value=device), \
+                self.assertLogs('main', level='INFO'):
+            self.assertEqual(dump_keys.run(), 0)
+        device.hook_to_process.assert_called_once()
+        device.close.assert_called_once_with()
+        self.connection_class.assert_not_called()
 
     def test_run_propagates_real_errors(self):
         with mock.patch.object(dump_keys, 'main', side_effect=RuntimeError('startup failed')):

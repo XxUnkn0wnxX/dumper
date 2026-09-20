@@ -48,6 +48,7 @@ UNPACKED_LIMIT = 512 * 1024 * 1024
 TIMEOUT = 30
 STOP_TIMEOUT = 10
 STOP_INTERVAL = 0.25
+WINDOWS_CHILD_CLEANUP_TIMEOUT = 5
 VERSION_PATTERN = re.compile(r'v?(\d+\.\d+\.\d+)\Z')
 
 ARCHITECTURES = {
@@ -868,6 +869,33 @@ def foreground_server_command(interactive: bool, root_mode: str = 'direct') -> s
     )
 
 
+def _reap_windows_adb_child(process) -> None:
+    """Terminate and reap a Windows ADB child after host-side interruption."""
+    try:
+        process.terminate()
+    except OSError:
+        # The child may have exited between the interruption and cleanup.
+        pass
+    try:
+        process.wait(timeout=WINDOWS_CHILD_CLEANUP_TIMEOUT)
+        return
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    try:
+        process.kill()
+    except OSError:
+        pass
+    try:
+        process.wait(timeout=WINDOWS_CHILD_CLEANUP_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired):
+        print(
+            'Warning: could not reap the Windows ADB child after cancellation; '
+            'check Task Manager before retrying.',
+            file=sys.stderr,
+        )
+
+
 def handoff_to_adb(argv: list[str], purpose: str) -> NoReturn:
     """Give ADB inherited terminal streams after all temporary cleanup finishes."""
     try:
@@ -876,13 +904,41 @@ def handoff_to_adb(argv: list[str], purpose: str) -> NoReturn:
         sys.stdout.flush()
         sys.stderr.flush()
         if sys.platform.startswith('win'):
-            # Windows exec starts a new process and exits the caller, letting
-            # the host shell resume too early. Wait without capturing I/O or
-            # imposing a timeout; subprocess also preserves Windows quoting.
+            # Windows has no POSIX-style exec replacement. Own one direct ADB
+            # child with inherited terminal streams and wait indefinitely while
+            # it owns the session; only host cancellation/error enters bounded
+            # termination and reaping.
             try:
-                raise SystemExit(subprocess.run(argv, check=False).returncode)
+                process = subprocess.Popen(argv, shell=False)
+            except OSError as error:
+                raise SetupError(
+                    f'{purpose}: ADB could not start: {error}. '
+                    'Check the ADB executable and reconnect the Android device before retrying.'
+                ) from error
+            try:
+                returncode = process.wait()
             except KeyboardInterrupt:
+                _reap_windows_adb_child(process)
+                print(
+                    'ADB session cancelled. Reconnect the Android device if needed '
+                    'before retrying setup.',
+                    file=sys.stderr,
+                )
                 raise SystemExit(130) from None
+            except OSError as error:
+                _reap_windows_adb_child(process)
+                raise SetupError(
+                    f'{purpose}: ADB session wait failed: {error}. '
+                    'Reconnect the Android device if needed before retrying.'
+                ) from error
+            if returncode:
+                print(
+                    f'ADB session ended with exit status {returncode}. If the Android '
+                    'device disconnected, reconnect it before retrying; otherwise '
+                    'inspect the ADB/Frida output above.',
+                    file=sys.stderr,
+                )
+            raise SystemExit(returncode)
         os.execv(argv[0], argv)
     except OSError as error:
         raise SetupError(f'{purpose}: {error}') from error
