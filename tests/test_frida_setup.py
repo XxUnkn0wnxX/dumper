@@ -518,12 +518,13 @@ class InstallAndShellTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             server = Path(temporary) / 'frida-server'
             server.write_bytes(elf())
-            with mock.patch.object(setup, 'adb_command', return_value=Completed()) as adb, \
+            with mock.patch.object(setup, 'adb_command', side_effect=[Completed(stdout='device\n'), Completed()]) as adb, \
                     mock.patch.object(setup, 'run_root', side_effect=[Completed(stdout='17.18.0\n'), Completed(), Completed()]) as root, \
                     mock.patch.object(setup, 'stop_managed_servers') as stop, \
                     mock.patch.object(setup, 'managed_server_pids', return_value=[]):
                 setup.install_server('/adb', 'serial', 'su-c', server, '17.18.0', staging_name='/data/local/tmp/.frida-server-test')
-        upload = adb.call_args_list[0]
+        self.assertEqual(adb.call_args_list[0].args, ('/adb', 'serial', 'get-state'))
+        upload = adb.call_args_list[1]
         self.assertEqual(upload.args[2:4], ('push', str(server)))
         self.assertEqual(upload.args[4], '/data/local/tmp/.frida-server-test')
         scripts = [call.args[3] for call in root.call_args_list]
@@ -540,7 +541,7 @@ class InstallAndShellTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             server = Path(temporary) / 'frida-server'
             server.write_bytes(elf())
-            with mock.patch.object(setup, 'adb_command', return_value=Completed()), \
+            with mock.patch.object(setup, 'adb_command', side_effect=[Completed(stdout='device\n'), Completed()]), \
                     mock.patch.object(
                         setup, 'run_root',
                         side_effect=[Completed(stdout='17.18.0\n'), setup.SetupError('destination is special'), Completed()],
@@ -556,13 +557,30 @@ class InstallAndShellTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             server = Path(temporary) / 'frida-server'
             server.write_bytes(elf())
-            with mock.patch.object(setup, 'adb_command', return_value=Completed()), \
+            with mock.patch.object(setup, 'adb_command', side_effect=[Completed(stdout='device\n'), Completed()]), \
                     mock.patch.object(setup, 'run_root', side_effect=[setup.SetupError('version failed'), Completed()]) as root:
                 with self.assertRaisesRegex(setup.SetupError, 'version failed'):
                     setup.install_server('/adb', 'serial', 'direct', server, '17.18.0', staging_name='/data/local/tmp/.frida-server-owned')
         cleanup = root.call_args_list[-1]
         self.assertIn('rm /data/local/tmp/.frida-server-owned', cleanup.args[3])
         self.assertNotIn(setup.REMOTE_SERVER, cleanup.args[3])
+
+    def test_disconnect_before_upload_does_not_push_or_touch_remote_server(self):
+        for result in (
+            Completed(stdout='offline'), Completed(stdout='unauthorized'),
+            Completed(), Completed(stdout='device', returncode=1),
+        ):
+            with self.subTest(state=result.stdout, returncode=result.returncode), \
+                    mock.patch.object(setup, 'adb_command', return_value=result) as adb, \
+                    mock.patch.object(setup, 'run_root') as root, \
+                    mock.patch.object(setup, 'stop_managed_servers') as stop:
+                with self.assertRaisesRegex(setup.SetupError, 'No file was uploaded'):
+                    setup.install_server('/adb', 'serial', 'su-0', Path('unused'), '17.18.0')
+            adb.assert_called_once_with(
+                '/adb', 'serial', 'get-state', purpose='Checking device before upload', check=False,
+            )
+            root.assert_not_called()
+            stop.assert_not_called()
 
     def test_managed_process_discovery_and_stop_are_narrow_and_graceful(self):
         with mock.patch.object(setup, 'run_root', return_value=Completed(stdout='42\n77\n')) as root:

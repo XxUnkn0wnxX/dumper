@@ -41,6 +41,9 @@ for an online target and requires at least one row whose state is exactly
 matching archive is already cached; it is not a request to mount or inspect host
 storage. If no eligible row exists, the helper stops before target checks, cache
 work, release lookup, download, installation, or shell handoff.
+Immediately before uploading a downloaded or cached server, the helper checks
+that the **same selected device** still reports `device`. If it disconnected
+during preparation, setup stops before sending the file.
 
 > [!IMPORTANT]
 > **Wait for Android to finish booting before running this helper or the dumper.**
@@ -370,6 +373,13 @@ installed `/data/local/tmp/frida-server` is intentionally retained for use.
 
 ### Maintainer checks
 
+Managed-server checks inspect `/proc/PID/exe` links in one batch, avoiding a
+separate `readlink` process for every PID on busy emulators. Exact executable
+paths, including deleted mappings, still determine ownership; each candidate
+is rechecked immediately before SIGTERM. Setup-command timeouts report the
+failed stage without dumping the generated shell script. An unreadable process
+listing stops setup rather than being treated as proof that no server exists.
+
 The focused tests use mocked ADB commands and synthetic release/download data.
 The terminal tests use local fake programs and PTYs; they never contact Android.
 They verify that the POSIX ADB handoff keeps the same process identity, that the
@@ -379,6 +389,7 @@ that setup errors return without opening a follow-up shell:
 
 ```sh
 .venv/bin/python -m unittest discover -s tests -p 'test_frida_setup.py' -v
+.venv/bin/python -m unittest discover -s tests -p 'test_frida_process_scan.py' -v
 .venv/bin/python -m unittest discover -s tests -p 'test_frida_terminal.py' -v
 .venv/bin/python -m unittest discover -s tests -p 'test_readme_docs.py' -v
 ```
@@ -386,6 +397,7 @@ that setup errors return without opening a follow-up shell:
 | Test module | Coverage |
 | --- | --- |
 | [`test_frida_setup.py`](../tests/test_frida_setup.py) | Device selection, root checks, installation, cache integrity, network failures, and cleanup. |
+| [`test_frida_process_scan.py`](../tests/test_frida_process_scan.py) | Batched executable-link scans, exact/deleted path matching, malformed listings, and guards that prevent replacement or launch while a managed server remains. |
 | [`test_frida_terminal.py`](../tests/test_frida_terminal.py) | ADB handoff in the same process, foreground terminal input/output, Ctrl+C, nested `su-c`/`su-0` exits, the remaining shell's directory, and error exit statuses. Skipped on Windows because it uses POSIX PTYs. |
 | [`test_readme_docs.py`](../tests/test_readme_docs.py) | Local README links, markup, navigation, and command argument tables. |
 

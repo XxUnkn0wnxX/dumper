@@ -114,7 +114,13 @@ def command_output(command: list[str], purpose: str, *, timeout: int = TIMEOUT,
             timeout=timeout,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except subprocess.TimeoutExpired as error:
+        raise SetupError(
+            f'{purpose} timed out after {timeout} seconds. '
+            'The Android command did not finish; check the device/ADB connection, '
+            'wait for a responsive home screen, and retry.'
+        ) from error
+    except OSError as error:
         raise SetupError(f'{purpose}: {error}') from error
     if check and result.returncode:
         detail = ((result.stdout or '') + (result.stderr or '')).strip()
@@ -684,19 +690,60 @@ def remote_quote(*parts: str) -> str:
     return shlex.join(list(parts))
 
 
-def managed_server_pids(adb: str, serial: str, root_mode: str,
-                        *, include_deleted: bool = True) -> list[str]:
-    """Return process IDs using the managed path, optionally including deleted maps."""
+def _managed_server_scan_command(*, include_deleted: bool = True,
+                                 fail_if_found: bool = False) -> str:
+    """Inspect all executable links with one ls process instead of one fork/PID.
+
+    On a busy emulator, spawning readlink separately for hundreds of processes
+    can exceed the command timeout. Android's ls reads the same /proc/PID/exe
+    links in a batch. Parse only the stable link path/target suffix; ignore the
+    variable owner, size and timestamp columns. No process-name matching is used.
+    """
     managed = shlex.quote(REMOTE_SERVER)
     deleted = shlex.quote(f'{REMOTE_SERVER} (deleted)')
     patterns = f'{managed}|{deleted}' if include_deleted else managed
-    command = (
-        'for process in /proc/[0-9]*; do '
-        'pid=${process#/proc/}; '
-        'target=$(readlink "$process/exe" 2>/dev/null) || continue; '
-        f'case "$target" in {patterns}) printf "%s\\n" "$pid";; esac; '
-        'done'
-    )
+    action = 'exit 1' if fail_if_found else 'printf "%s\\n" "$pid"'
+    # A disappearing PID or a kernel thread without exe makes ls return 1.
+    # Larger failures (including a missing ls) must fail closed. The here-doc
+    # keeps the loop in the current shell: exit 1 must stop the later mv/start,
+    # not merely exit a pipeline's subshell and let deployment continue.
+    return f'''frida_process_links=$(LC_ALL=C ls -ld /proc/[0-9]*/exe 2>/dev/null)
+frida_scan_status=$?
+if test "$frida_scan_status" -gt 1 || test -z "$frida_process_links"; then
+    printf 'Could not inspect Android process executable links\\n' >&2
+    exit 2
+fi
+frida_scanned_links=0
+while IFS= read -r frida_process_entry; do
+    case "$frida_process_entry" in
+        *" /proc/"[0-9]*"/exe -> "*) ;;
+        *) continue ;;
+    esac
+    frida_scanned_links=$((frida_scanned_links + 1))
+    target=${{frida_process_entry#* -> }}
+    case "$target" in
+        {patterns})
+            pid=${{frida_process_entry%%/exe -> *}}
+            pid=${{pid##*/}}
+            case "$pid" in ''|*[!0-9]*) exit 2 ;; esac
+            if test "$pid" -le 1; then exit 2; fi
+            {action}
+            ;;
+    esac
+done <<__FRIDA_PROCESS_LINKS__
+$frida_process_links
+__FRIDA_PROCESS_LINKS__
+if test "$frida_scanned_links" -eq 0; then
+    printf 'Android process executable listing was unreadable\\n' >&2
+    exit 2
+fi
+:'''
+
+
+def managed_server_pids(adb: str, serial: str, root_mode: str,
+                        *, include_deleted: bool = True) -> list[str]:
+    """Return process IDs using the managed path, optionally including deleted maps."""
+    command = _managed_server_scan_command(include_deleted=include_deleted)
     result = run_root(adb, serial, root_mode, command, 'Finding managed Frida server processes')
     pids = []
     for value in (result.stdout or '').split():
@@ -708,14 +755,7 @@ def managed_server_pids(adb: str, serial: str, root_mode: str,
 
 def managed_server_absent_command() -> str:
     """Return a remote script which fails if any managed current/deleted daemon exists."""
-    managed = shlex.quote(REMOTE_SERVER)
-    deleted = shlex.quote(f'{REMOTE_SERVER} (deleted)')
-    return (
-        'for process in /proc/[0-9]*; do '
-        'target=$(readlink "$process/exe" 2>/dev/null) || continue; '
-        f'case "$target" in {managed}|{deleted}) exit 1;; esac; '
-        'done'
-    )
+    return _managed_server_scan_command(fail_if_found=True)
 
 
 def terminate_managed_pid(adb: str, serial: str, root_mode: str, pid: str) -> None:
@@ -965,6 +1005,14 @@ def run_foreground_server(adb: str, serial: str, root_mode: str, *, interactive:
 def install_server(adb: str, serial: str, root_mode: str, server: Path,
                    version: str, *, staging_name: str | None = None) -> None:
     """Verify a staged candidate, stop only managed processes, then replace atomically."""
+    # Selection happened before download/cache work. Recheck the same transport
+    # immediately before uploading; never substitute another connected device.
+    state = adb_command(adb, serial, 'get-state', purpose='Checking device before upload', check=False)
+    if state.returncode != 0 or (state.stdout or '').strip() != 'device':
+        raise SetupError(
+            f'Android device {serial} is no longer online. Reconnect and authorize '
+            'it, wait for its home screen, and retry. No file was uploaded.'
+        )
     staging = staging_name or f'{REMOTE_DIRECTORY}/.frida-server-{uuid.uuid4().hex}'
     cleanup_needed = False
     try:

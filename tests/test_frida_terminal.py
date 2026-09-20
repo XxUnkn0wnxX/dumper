@@ -94,6 +94,9 @@ class FridaTerminalTests(unittest.TestCase):
         self.adb = self.make_program('fake-adb', FAKE_ADB)
         self.make_program('su', FAKE_SU)
         self.make_program('getprop', "print('generic_test_device')\n")
+        # Model Android's readable /proc links instead of inspecting the host's
+        # process table (macOS has no /proc, and ls exit statuses differ).
+        self.make_program('ls', "print('lrwxrwxrwx 1 root root 0 2026-01-01 00:00 /proc/123/exe -> /system/bin/sh')\n")
 
     def make_program(self, name, source):
         script = self.directory / f'{name}.py'
