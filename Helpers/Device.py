@@ -34,9 +34,9 @@ _PAIR_SAVE_FALLBACK_LOCK = threading.Lock()
 # ordinary names, spaces, and version dots.
 # ------------------------------------------------------------------------------
 KEY_DUMPS_ROOT = 'key_dumps'
-# A key capture can arrive before the matching license request. Give the
-# request time to arrive before explaining that no pair has been saved.
-NO_PAIR_WARNING_DELAY = 15.0
+# Give playback and its license request time to arrive after hooks are ready.
+# The dumper owns this timer for both manual and full-auto runs.
+NO_PAIR_WARNING_DELAY = 35.0
 # Resolve display paths against the checkout that contains this module.  The
 # dumper may be launched from another working directory, so using ``cwd`` here
 # would make the path printed to the terminal depend on how it was started.
@@ -232,8 +232,11 @@ class Device:
         self._pair_saved = False
         self._saved_pair_path = None
         self._first_private_key_at = None
+        self._capture_wait_started_at = None
         self._matching_pair_save_attempted = False
         self._no_pair_warning_emitted = False
+        self.browser_launched = False
+        self._browser_refresh_attempted = False
         self._reported_client_cdm_versions = set()
         self._capture_sessions = []
         self.widevine_libraries = module_names
@@ -335,8 +338,13 @@ class Device:
                 return True
         return False
 
+    def start_capture_wait(self, now=None):
+        """Start the one-shot progress deadline once the CLI's hooks are ready."""
+        if getattr(self, '_capture_wait_started_at', None) is None:
+            self._capture_wait_started_at = time.monotonic() if now is None else now
+
     def warn_if_no_pair(self, now=None):
-        """Warn once when captured RSA keys have not produced a saved pair.
+        """Warn once when ready hooks have not produced a saved pair.
 
         The run loop calls this inexpensive check periodically.  It does not
         infer a CDM layout from the missing output: a license request may still
@@ -347,7 +355,12 @@ class Device:
         if status_error is not None:
             raise status_error
         first_key_at = getattr(self, '_first_private_key_at', None)
-        if first_key_at is None:
+        started_at = getattr(self, '_capture_wait_started_at', None)
+        # Keep direct Device users working without requiring the CLI lifecycle.
+        # Normal dumper runs always arm the timer, including when no RSA arrives.
+        if started_at is None:
+            started_at = first_key_at
+        if started_at is None:
             return False
         if getattr(self, '_no_pair_warning_emitted', False):
             return False
@@ -357,16 +370,23 @@ class Device:
             return False
 
         current_time = time.monotonic() if now is None else now
-        if current_time - first_key_at < NO_PAIR_WARNING_DELAY:
+        if current_time - started_at < NO_PAIR_WARNING_DELAY:
             return False
 
-        self.logger.warning(
-            'RSA keys received, but no matching client ID/key pair has been saved. '
-            'Trigger DRM playback or a new license request; if this persists, '
-            'verify a supported --cdm-version <layout> using --help. '
-            'Missing output alone does not prove a mismatch.'
-        )
         self._no_pair_warning_emitted = True
+        if first_key_at is not None:
+            self.logger.warning(
+                'RSA keys received, but no matching client ID/key pair has been saved. '
+                'Trigger DRM playback or a new license request; if this persists, '
+                'verify a supported --cdm-version <layout> using --help. '
+                'Missing output alone does not prove a mismatch.'
+            )
+        else:
+            self.logger.warning(
+                'No matching client ID/key pair has been saved after %.0f seconds. '
+                'Check Android for playback/permission prompts and press Play if needed. '
+                'Capture remains active.', NO_PAIR_WARNING_DELAY,
+            )
         return True
 
     def _client_cdm_version(self, client_id):

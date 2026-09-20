@@ -164,9 +164,12 @@ Key pairs saved at key_dumps/Android Emulator 5554/private_keys/CDM 14.0.0 - API
 Existing RSA/key output and debug verbosity remain visible. Hook setup or an
 unmatched request alone does not create a pair. As soon as a license request is
 parsed, the dumper prints the client ID's `widevine_cdm_version` at INFO level,
-once per distinct reported version. If RSA keys arrive but no pair is saved
-after 15 seconds, a one-time warning suggests triggering playback and checking
-supported layout options. Missing output alone does not prove a version mismatch.
+once per distinct reported version. If no completed, verified pair exists about
+35 seconds after successful hook readiness, including browser startup time, the
+dumper emits one warning and performs the single refresh check described in the
+[Chrome guide](chrome.md#post-readiness-warning-and-refresh). Missing output
+alone does not prove a version mismatch; the warning remains generic without
+RSA output and retains layout advice when RSA output is present.
 
 Older output is left in place: its two numeric folder names were the
 certificate's **Widevine system ID** and the **first ten decimal digits of the

@@ -190,32 +190,104 @@ class FullAutoTests(unittest.TestCase):
             with self.subTest(expected=expected), self.assertRaisesRegex(full_auto.AutoError, expected):
                 full_auto.verify_pair(bad_event, 'pixel', 30)
 
-    def test_wait_for_pair_warns_at_twenty_seconds_and_continues_to_pair(self):
+    def test_wait_for_pair_mirrors_one_validated_child_warning_and_continues(self):
         controller = self.make_controller(timeout=100)
         pair = self.pair_event()
+        hooks = {
+            'event': 'hooks_ready', 'device_id': 'pixel', 'android_api': '30',
+            'hooked_libraries': 1,
+        }
+        no_pair = {
+            'event': 'no_pair_yet', 'device_id': 'pixel', 'android_api': '30',
+            'browser_refresh_requested': True,
+        }
         events = [
-            [{'event': 'hooks_ready', 'device_id': 'pixel', 'android_api': '30', 'hooked_libraries': 1}],
-            [{'event': 'hooks_ready', 'device_id': 'pixel', 'android_api': '30', 'hooked_libraries': 1}],
-            [{'event': 'hooks_ready', 'device_id': 'pixel', 'android_api': '30', 'hooked_libraries': 1}, pair],
+            [hooks],
+            [hooks, no_pair],
+            [hooks, no_pair],
+            [hooks, no_pair, pair],
         ]
-        clock = [0.0]
-        sleeps = []
-
-        def advance(seconds):
-            sleeps.append(seconds)
-            clock[0] += 20.0 if len(sleeps) == 1 else seconds
 
         with mock.patch.object(controller, 'events', side_effect=events), \
                 mock.patch.object(controller, 'check_processes'), \
                 mock.patch.object(full_auto, 'verify_pair', return_value='key_dumps/fresh-pair') as verify, \
+                mock.patch.object(full_auto.time, 'monotonic', return_value=0), \
+                mock.patch.object(full_auto.time, 'sleep'), \
+                mock.patch.object(full_auto, 'print') as output:
+            self.assertEqual(controller.wait_for_pair(), 'key_dumps/fresh-pair')
+
+        verify.assert_called_once_with(pair, 'pixel', 30)
+        warning_lines = [call.args[0] for call in output.call_args_list if 'No pair saved yet.' in call.args[0]]
+        self.assertEqual(len(warning_lines), 1)
+        self.assertIn('refresh', warning_lines[0].lower())
+
+    def test_wait_for_pair_pair_saved_in_same_batch_wins_over_warning(self):
+        controller = self.make_controller(timeout=100)
+        pair = self.pair_event()
+        hooks = {
+            'event': 'hooks_ready', 'device_id': 'pixel', 'android_api': '30',
+            'hooked_libraries': 1,
+        }
+        no_pair = {
+            'event': 'no_pair_yet', 'device_id': 'pixel', 'android_api': '30',
+            'browser_refresh_requested': True,
+        }
+        with mock.patch.object(controller, 'events', side_effect=[[hooks], [hooks, pair, no_pair]]), \
+                mock.patch.object(controller, 'check_processes'), \
+                mock.patch.object(full_auto, 'verify_pair', return_value='key_dumps/fresh-pair') as verify, \
+                mock.patch.object(full_auto.time, 'monotonic', return_value=0), \
+                mock.patch.object(full_auto.time, 'sleep'), \
+                mock.patch.object(full_auto, 'print') as output:
+            self.assertEqual(controller.wait_for_pair(), 'key_dumps/fresh-pair')
+
+        verify.assert_called_once_with(pair, 'pixel', 30)
+        self.assertFalse(any('No pair saved yet.' in call.args[0] for call in output.call_args_list))
+
+    def test_wait_for_pair_does_not_warn_from_controller_clock(self):
+        controller = self.make_controller(timeout=100)
+        pair = self.pair_event()
+        clock = [0.0]
+
+        def advance(_seconds):
+            clock[0] += 40.0
+
+        hooks = {
+            'event': 'hooks_ready', 'device_id': 'pixel', 'android_api': '30',
+            'hooked_libraries': 1,
+        }
+        with mock.patch.object(controller, 'events', side_effect=[[hooks], [hooks], [hooks, pair]]), \
+                mock.patch.object(controller, 'check_processes'), \
+                mock.patch.object(full_auto, 'verify_pair', return_value='key_dumps/fresh-pair'), \
                 mock.patch.object(full_auto.time, 'monotonic', side_effect=lambda: clock[0]), \
                 mock.patch.object(full_auto.time, 'sleep', side_effect=advance), \
                 mock.patch.object(full_auto, 'print') as output:
             self.assertEqual(controller.wait_for_pair(), 'key_dumps/fresh-pair')
 
-        verify.assert_called_once_with(pair, 'pixel', 30)
-        self.assertEqual(len(sleeps), 2)
-        self.assertTrue(any('No pair saved yet.' in call.args[0] for call in output.call_args_list))
+        self.assertFalse(any('No pair saved yet.' in call.args[0] for call in output.call_args_list))
+
+    def test_wait_for_pair_rejects_wrong_readiness_or_progress_metadata(self):
+        for event, expected in (
+                ({
+                    'event': 'hooks_ready', 'device_id': 'other', 'android_api': '30',
+                    'hooked_libraries': 1,
+                }, 'did not confirm valid automatic hooks'),
+                ({
+                    'event': 'no_pair_yet', 'device_id': 'other', 'android_api': '30',
+                    'browser_refresh_requested': False,
+                }, 'device/API')):
+            with self.subTest(event=event['event']):
+                controller = self.make_controller(timeout=100)
+                hooks = {
+                    'event': 'hooks_ready', 'device_id': 'pixel', 'android_api': '30',
+                    'hooked_libraries': 1,
+                }
+                batches = [[event]] if event['event'] == 'hooks_ready' else [[hooks], [hooks, event]]
+                with mock.patch.object(controller, 'events', side_effect=batches), \
+                        mock.patch.object(controller, 'check_processes'), \
+                        mock.patch.object(full_auto.time, 'monotonic', return_value=0), \
+                        mock.patch.object(full_auto.time, 'sleep'):
+                    with self.assertRaisesRegex(full_auto.AutoError, expected):
+                        controller.wait_for_pair()
 
     def test_start_process_records_owned_background_process_and_log_path(self):
         controller = self.make_controller()

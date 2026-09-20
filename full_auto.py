@@ -25,7 +25,6 @@ from tools import setup_frida
 
 
 ROOT = Path(__file__).resolve().parent
-WARNING_DELAY = 20
 FINISH_DELAY = 3
 POLL_INTERVAL = 0.25
 PROBE_INTERVAL = 2
@@ -293,17 +292,29 @@ class AutoRun:
             for event in events:
                 if event.get('event') == 'pair_saved' and hooked_at is not None:
                     return verify_pair(event, self.serial, self.api)
+            # The dumper owns the 35-second warning and optional single refresh.
+            # Mirror its event only; a second controller timer could refresh
+            # twice or warn while the dumper is already writing the pair.
+            for event in events:
+                if event.get('event') == 'no_pair_yet' and hooked_at is not None and not warned:
+                    if (event.get('device_id') != self.serial
+                            or event.get('android_api') != str(self.api)):
+                        raise AutoError('The dumper progress status does not match the selected Android device/API.')
+                    refresh_hint = (
+                        'The dumper is attempting one Chrome page refresh. '
+                        if event.get('browser_refresh_requested') is True else ''
+                    )
+                    print(
+                        'No pair saved yet. ' + refresh_hint
+                        + 'Check Android for playback/permission prompts and press Play if needed. '
+                        'Still waiting; Ctrl+C cancels. For advanced manual options see docs/dumper.md.',
+                        flush=True,
+                    )
+                    warned = True
             self.check_processes()
             now = time.monotonic()
             if hooked_at is None and now >= hook_deadline:
                 raise AutoError('Automatic hooks did not become ready. Try dump_keys.py manually; see docs/dumper.md.')
-            if hooked_at is not None and not warned and now - hooked_at >= WARNING_DELAY:
-                print(
-                    'No pair saved yet. Check Android for playback/permission prompts and press Play if needed. '
-                    'Still waiting; Ctrl+C cancels. For advanced manual options see docs/dumper.md.',
-                    flush=True,
-                )
-                warned = True
             time.sleep(POLL_INTERVAL)
 
     def stop_remote(self):

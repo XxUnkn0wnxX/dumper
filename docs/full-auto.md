@@ -84,9 +84,12 @@ After Frida startup is verified, the controller launches the dumper as the
 second background child, supplying its internal `--non-interactive` flag. The
 dumper still checks the exported signature and must successfully hook a supported
 layout; Android API level alone cannot establish that the capture is supported. Once both workers
-report ready, the controller warns after roughly 20 seconds if playback has
-not produced a pair, but waits indefinitely while the session remains healthy
-for user playback or a browser permission action.
+report ready, the dumper's progress check warns after roughly 35 seconds if no
+completed, verified pair exists, including time spent in browser startup, but waits
+indefinitely while the session remains healthy for user playback or a browser
+permission action. The dumper owns the single refresh check described in the
+[Chrome guide](chrome.md#post-readiness-warning-and-refresh); full auto mirrors
+its status event and does not run a separate timer or refresh.
 
 Only the first newly completed, read-back-verified pair from this controller
 run counts as its result: `client_id.bin` and `private_key.pem` must both be

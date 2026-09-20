@@ -14,7 +14,7 @@ from Helpers.wv_proto2_pb2 import SignedLicenseRequest
 
 
 class CaptureProgressTests(unittest.TestCase):
-    """Keep capture guidance passive, deterministic, and tied to real state."""
+    """Keep delayed capture guidance deterministic and tied to real state."""
 
     @classmethod
     def setUpClass(cls):
@@ -110,11 +110,11 @@ class CaptureProgressTests(unittest.TestCase):
         self.assertTrue(any('missing or blank' in line for line in logs.output))
         self.assertTrue(any('conflicting' in line for line in logs.output))
 
-    def test_no_key_capture_never_warns(self):
+    def test_no_ready_hooks_or_key_capture_never_warns(self):
         device = self.device()
 
         with mock.patch.object(device.logger, 'warning') as warning:
-            self.assertFalse(device.warn_if_no_pair(now=15.0))
+            self.assertFalse(device.warn_if_no_pair(now=35.0))
 
         warning.assert_not_called()
 
@@ -124,15 +124,38 @@ class CaptureProgressTests(unittest.TestCase):
             device.on_message({'payload': 'private_key'}, self.private_key.export_key())
 
         with mock.patch.object(device.logger, 'warning') as warning:
-            self.assertFalse(device.warn_if_no_pair(now=114.99))
-            self.assertTrue(device.warn_if_no_pair(now=115.0))
-            self.assertFalse(device.warn_if_no_pair(now=130.0))
+            self.assertFalse(device.warn_if_no_pair(now=134.99))
+            self.assertTrue(device.warn_if_no_pair(now=135.0))
+            self.assertFalse(device.warn_if_no_pair(now=170.0))
 
         warning.assert_called_once()
         message = warning.call_args.args[0]
         self.assertIn('RSA keys received', message)
         self.assertIn('--cdm-version <layout>', message)
         self.assertIn('Missing output alone does not prove a mismatch', message)
+
+    def test_ready_hooks_warn_once_after_35_seconds_even_without_rsa(self):
+        device = self.device()
+        device.start_capture_wait(now=100.0)
+        # Repeated readiness cannot postpone the user's warning indefinitely.
+        device.start_capture_wait(now=130.0)
+        with mock.patch.object(device.logger, 'warning') as warning:
+            self.assertFalse(device.warn_if_no_pair(now=134.99))
+            self.assertTrue(device.warn_if_no_pair(now=135.0))
+            self.assertFalse(device.warn_if_no_pair(now=170.0))
+        warning.assert_called_once()
+        self.assertIn('No matching client ID/key pair', warning.call_args.args[0])
+        self.assertEqual(warning.call_args.args[1], 35.0)
+        self.assertNotIn('--cdm-version', warning.call_args.args[0])
+
+    def test_rsa_arrival_does_not_restart_the_ready_hooks_deadline(self):
+        device = self.device()
+        device.start_capture_wait(now=100.0)
+        device._first_private_key_at = 132.0
+        with mock.patch.object(device.logger, 'warning') as warning:
+            self.assertFalse(device.warn_if_no_pair(now=134.99))
+            self.assertTrue(device.warn_if_no_pair(now=135.0))
+        self.assertIn('RSA keys received', warning.call_args.args[0])
 
     def test_successfully_saved_pair_suppresses_guidance(self):
         device = self.device()
@@ -141,7 +164,7 @@ class CaptureProgressTests(unittest.TestCase):
 
         with mock.patch.object(device_module, '_pair_matches', return_value=True), \
                 mock.patch.object(device.logger, 'warning') as warning:
-            self.assertFalse(device.warn_if_no_pair(now=115.0))
+            self.assertFalse(device.warn_if_no_pair(now=135.0))
 
         warning.assert_not_called()
 
@@ -161,7 +184,7 @@ class CaptureProgressTests(unittest.TestCase):
         device.export_key = mock.Mock(side_effect=failed_export)
         with self.assertLogs('test.capture_progress', level='WARNING') as logs:
             device.license_request_message(self.request_bytes)
-            self.assertFalse(device.warn_if_no_pair(now=115.0))
+            self.assertFalse(device.warn_if_no_pair(now=135.0))
 
         device.export_key.assert_called_once()
         self.assertTrue(any('Could not save key pair' in line for line in logs.output))

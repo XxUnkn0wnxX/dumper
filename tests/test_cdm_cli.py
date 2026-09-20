@@ -186,18 +186,21 @@ class CdmCommandLineTests(unittest.TestCase):
         adb_patch = mock.patch.object(dump_keys, 'report_adb_version')
         frida_patch = mock.patch.object(dump_keys, 'report_frida_versions')
         browser_patch = mock.patch.object(dump_keys, 'launch_test_page', return_value=True)
+        browser_refresh_patch = mock.patch.object(dump_keys, 'refresh_test_page', return_value=True)
         browser_close_patch = mock.patch.object(dump_keys, 'close_test_browser', return_value=True)
         connection_patch = mock.patch.object(dump_keys, 'CaptureConnection')
         event_patch = mock.patch.object(dump_keys, 'emit_event')
         self.addCleanup(adb_patch.stop)
         self.addCleanup(frida_patch.stop)
         self.addCleanup(browser_patch.stop)
+        self.addCleanup(browser_refresh_patch.stop)
         self.addCleanup(browser_close_patch.stop)
         self.addCleanup(connection_patch.stop)
         self.addCleanup(event_patch.stop)
         self.adb_report = adb_patch.start()
         self.frida_report = frida_patch.start()
         self.browser_launch = browser_patch.start()
+        self.browser_refresh = browser_refresh_patch.start()
         self.browser_close = browser_close_patch.start()
         self.connection_class = connection_patch.start()
         self.emit_event = event_patch.start()
@@ -250,13 +253,42 @@ class CdmCommandLineTests(unittest.TestCase):
 
         self.assertEqual(calls, ['hook', 'browser'])
 
+    def test_capture_wait_is_armed_before_readiness_event_and_browser_launch(self):
+        process = SimpleNamespace(name='drm_process')
+        device = self.make_cli_device([process], ['libwvhidl.so'])
+        calls = []
+        device.start_capture_wait.side_effect = lambda: calls.append('capture_wait')
+        self.emit_event.side_effect = lambda *args, **kwargs: calls.append('event')
+        self.browser_launch.side_effect = lambda *_args, **_kwargs: calls.append('browser') or True
+
+        self.run_cli([], device)
+
+        self.assertEqual(calls, ['capture_wait', 'event', 'browser'])
+
+    def test_successful_browser_launch_records_true_browser_state(self):
+        device = self.make_cli_device([SimpleNamespace(name='drm_process')], ['libwvhidl.so'])
+        self.browser_launch.return_value = True
+
+        self.run_cli([], device)
+
+        self.assertIs(device.browser_launched, True)
+
     def test_no_browser_keeps_capture_running_without_launch(self):
         device = self.make_cli_device([SimpleNamespace(name='drm_process')], ['libwvhidl.so'])
 
         self.run_cli(['--no-browser'], device)
 
         self.browser_launch.assert_not_called()
+        self.assertIs(device.browser_launched, False)
         device.hook_to_process.assert_called_once()
+
+    def test_failed_browser_launch_keeps_browser_state_false(self):
+        device = self.make_cli_device([SimpleNamespace(name='drm_process')], ['libwvhidl.so'])
+        self.browser_launch.return_value = False
+
+        self.run_cli([], device)
+
+        self.assertIs(device.browser_launched, False)
 
     def test_custom_site_file_is_forwarded_and_browser_failure_is_nonfatal(self):
         device = self.make_cli_device([SimpleNamespace(name='drm_process')], ['libwvhidl.so'])
@@ -606,14 +638,116 @@ class CdmCommandLineTests(unittest.TestCase):
     def test_run_checks_capture_progress_while_waiting(self):
         device = mock.Mock()
         with mock.patch.object(dump_keys, 'main', return_value=device), \
+                mock.patch.object(dump_keys, '_check_capture_progress') as check_progress, \
                 mock.patch.object(dump_keys.time, 'sleep', side_effect=[None, KeyboardInterrupt]) as wait, \
                 self.assertLogs('main', level='INFO'):
             self.assertEqual(dump_keys.run(), 0)
-        device.warn_if_no_pair.assert_called_once_with()
+        check_progress.assert_called_once_with(device)
         self.connection_class.return_value.check.assert_called_once_with()
         self.connection_class.return_value.close.assert_called_once_with()
         device.close.assert_called_once_with()
         self.assertEqual(wait.call_args_list, [mock.call(1), mock.call(1)])
+
+    def test_capture_progress_emits_status_before_one_browser_refresh(self):
+        device = mock.Mock()
+        device.usb_device.id = 'android-1'
+        device.android_api_level = 33
+        device.browser_launched = True
+        device._browser_refresh_attempted = False
+        device._matching_pair_save_attempted = False
+        device._has_verified_saved_pair.return_value = False
+        device.warn_if_no_pair.return_value = True
+        calls = []
+        self.emit_event.side_effect = lambda *args, **kwargs: calls.append(('event', args, kwargs))
+        self.browser_refresh.side_effect = lambda *_args: calls.append(('refresh',)) or True
+
+        dump_keys._check_capture_progress(device)
+
+        self.assertEqual([name for name, *_rest in calls], ['event', 'refresh'])
+        self.assertEqual(calls[0][1:], (
+            ('no_pair_yet',), {
+                'device_id': 'android-1',
+                'android_api': '33',
+                'browser_refresh_requested': True,
+            },
+        ))
+        self.assertIs(device._browser_refresh_attempted, True)
+
+    def test_capture_progress_refreshes_at_most_once_even_when_helper_fails(self):
+        device = mock.Mock()
+        device.usb_device.id = 'android-1'
+        device.android_api_level = 33
+        device.browser_launched = True
+        device._matching_pair_save_attempted = False
+        device._has_verified_saved_pair.return_value = False
+        device.warn_if_no_pair.return_value = True
+        self.browser_refresh.return_value = False
+
+        dump_keys._check_capture_progress(device)
+        dump_keys._check_capture_progress(device)
+
+        self.assertEqual(self.browser_refresh.call_count, 1)
+        self.assertEqual(self.emit_event.call_count, 2)
+        self.assertEqual(
+            [call.kwargs['browser_refresh_requested'] for call in self.emit_event.call_args_list],
+            [True, False],
+        )
+
+    def test_capture_progress_requires_literal_true_warning_result(self):
+        device = mock.Mock()
+        device.warn_if_no_pair.return_value = 1
+
+        dump_keys._check_capture_progress(device)
+
+        self.emit_event.assert_not_called()
+        self.browser_refresh.assert_not_called()
+
+    def test_capture_progress_skips_refresh_when_pair_is_saved_between_status_and_io(self):
+        device = mock.Mock()
+        device.usb_device.id = 'android-1'
+        device.android_api_level = 33
+        device.browser_launched = True
+        device._matching_pair_save_attempted = False
+        device._browser_refresh_attempted = False
+        device.warn_if_no_pair.return_value = True
+        pair_saved = [False]
+        device._has_verified_saved_pair.side_effect = lambda: pair_saved[0]
+        self.emit_event.side_effect = lambda *_args, **_kwargs: pair_saved.__setitem__(0, True)
+
+        dump_keys._check_capture_progress(device)
+
+        self.browser_refresh.assert_not_called()
+        self.assertIs(device._browser_refresh_attempted, True)
+        self.emit_event.assert_called_once_with(
+            'no_pair_yet', device_id='android-1', android_api='33',
+            browser_refresh_requested=True,
+        )
+
+    def test_capture_progress_skips_refresh_without_browser_or_after_saved_pair(self):
+        for browser_launched, matching_attempt, verified_pair in (
+                (False, False, False), (True, True, False), (True, False, True)):
+            with self.subTest(
+                    browser_launched=browser_launched,
+                    matching_attempt=matching_attempt,
+                    verified_pair=verified_pair,
+            ):
+                device = mock.Mock()
+                device.usb_device.id = 'android-1'
+                device.android_api_level = 33
+                device.browser_launched = browser_launched
+                device._browser_refresh_attempted = False
+                device._matching_pair_save_attempted = matching_attempt
+                device._has_verified_saved_pair.return_value = verified_pair
+                device.warn_if_no_pair.return_value = True
+
+                dump_keys._check_capture_progress(device)
+
+        self.browser_refresh.assert_not_called()
+        self.assertEqual(self.emit_event.call_count, 3)
+        self.assertTrue(all(
+            call.kwargs['browser_refresh_requested'] is False
+            for call in self.emit_event.call_args_list
+        ))
 
     def test_startup_failure_releases_previously_installed_hooks(self):
         device = self.make_cli_device(

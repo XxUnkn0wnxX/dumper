@@ -9,6 +9,7 @@ the same serial must be online in ADB before any Chrome command is attempted.
 from dataclasses import dataclass
 import logging
 from pathlib import Path
+import re
 import shlex
 import subprocess
 from typing import Iterable
@@ -32,6 +33,11 @@ _MISSING_MARKER = '__DUMPER_CHROME_FLAGS_MISSING__'
 _EXISTS_MARKER = '__DUMPER_CHROME_FLAGS_EXISTS__'
 _SYMLINK_MARKER = '__DUMPER_CHROME_FLAGS_SYMLINK__'
 _ERROR_MARKERS = ('Error:', 'SecurityException', 'Exception occurred')
+_CURRENT_FOCUS_LINE = re.compile(r'^\s*mCurrentFocus\s*=\s*(?P<window>.+?)\s*$')
+_FOCUSED_WINDOW = re.compile(
+    r'^Window\{[^}\n]*\bu\d+\s+'
+    r'(?P<package>[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)/(?P<activity>[^\s}]+)\}$'
+)
 
 # Keep the browser policy in data so a verified compatibility addition is a
 # small, reviewable change.  Scalar switches are compared by their name before
@@ -497,7 +503,7 @@ def launch_test_page(device_id: str, logger, *, site_file=DEFAULT_SITE_FILE) -> 
             adb,
             device_id,
             shlex.join(('am', 'start', '-a', 'android.intent.action.VIEW',
-                        '-p', CHROME_PACKAGE, '-d', url)),
+                        '-p', CHROME_PACKAGE, '--activity-new-task', '-d', url)),
             'Opening the DRM test URL',
         )
         _require_success(start_result, 'Opening the DRM test URL')
@@ -512,6 +518,75 @@ def launch_test_page(device_id: str, logger, *, site_file=DEFAULT_SITE_FILE) -> 
     except (BrowserSetupError, SetupError, OSError, subprocess.TimeoutExpired,
             UnicodeError, ValueError, TypeError) as error:
         logger.warning('Could not open DRM test page on %s: %s', device_id, error)
+        return False
+
+
+def _focused_window_package(output: str) -> tuple[str | None, str]:
+    """Return the exact package of one well-formed ``mCurrentFocus`` window."""
+    windows = [
+        match.group('window').strip()
+        for line in output.splitlines()
+        if (match := _CURRENT_FOCUS_LINE.match(line)) is not None
+    ]
+    if not windows:
+        return None, 'the current focus is absent'
+    if len(windows) != 1:
+        return None, 'the current focus is ambiguous'
+
+    window = windows[0]
+    if window.lower() in {'null', 'none'}:
+        return None, 'the current focus is null'
+    match = _FOCUSED_WINDOW.fullmatch(window)
+    if match is None:
+        return None, 'the current focus window is malformed'
+    package = match.group('package')
+    if 'permission' in package.lower():
+        return package, 'an Android permission window is focused'
+    if package != CHROME_PACKAGE:
+        return package, f'the current focus belongs to {package}'
+    return package, 'Chrome is focused'
+
+
+def refresh_test_page(device_id: str, logger) -> bool:
+    """Request one refresh from Chrome only when its window is focused.
+
+    The focus snapshot is a short race window: Android may change focus after
+    the dump and before the key event.  We deliberately do not retry, steal
+    focus, relaunch Chrome, or claim that playback succeeded.
+    """
+    try:
+        if not isinstance(device_id, str) or not device_id:
+            raise ValueError('device ID must be a non-empty string')
+        adb = resolve_adb(None)
+        focus_result = _adb_shell(
+            adb,
+            device_id,
+            shlex.join(('dumpsys', 'window')),
+            'Checking the focused Android window',
+        )
+        focus_output = _require_success(focus_result, 'Checking the focused Android window')
+        package, reason = _focused_window_package(focus_output)
+        if package != CHROME_PACKAGE:
+            logger.warning(f'Skipping Chrome page refresh on {device_id}: {reason}.')
+            return False
+
+        refresh_result = _adb_shell(
+            adb,
+            device_id,
+            shlex.join(('input', 'keyevent', 'KEYCODE_F5')),
+            'Requesting one Chrome page refresh',
+        )
+        _require_success(refresh_result, 'Requesting one Chrome page refresh')
+        logger.info(
+            'Sent one Chrome page-refresh request to %s; this does not guarantee playback.',
+            device_id,
+        )
+        return True
+    except KeyboardInterrupt:
+        raise
+    except (BrowserSetupError, SetupError, OSError, subprocess.TimeoutExpired,
+            UnicodeError, ValueError, TypeError) as error:
+        logger.warning('Could not refresh the Chrome page on %s: %s', device_id, error)
         return False
 
 

@@ -5,7 +5,10 @@
 Both manual dumper runs and full auto use the same browser setup. Before opening
 the configured test page, the launcher applies testing flags to suppress Chrome's
 first-run screens, startup promotions, notification onboarding, and supported
-help bubbles. It then force-stops Chrome and launches the page afresh.
+help bubbles. It then force-stops Chrome and launches the page afresh using
+`am start --activity-new-task` targeting `com.android.chrome`, which asks Android
+to bring Chrome's task to the foreground. Keep the device unlocked; Android
+permission dialogs can still appear above the browser.
 
 The target must be the selected, online Android device with `com.android.chrome`
 installed and enabled. This works through ADB; it does not depend on a Pixel model
@@ -36,6 +39,31 @@ Flags are stored in `/data/local/tmp/chrome-command-line` with mode `0644` and
 remain for subsequent Chrome launches until removed. The launcher does not clear
 browsing data, change Android permission grants, sign into an account, select a
 default browser or search provider, change `ro.debuggable`, or restart ADB/Frida.
+
+## Post-readiness warning and refresh
+
+After successful hook readiness, the dumper's normal progress check waits about
+35 seconds before acting; time spent in automatic browser startup is included,
+and the check runs when that startup call returns. If no completed, verified
+pair exists, it emits one warning and retains the RSA debug/client logs. The
+warning is generic when no RSA key has arrived and keeps the layout advice when
+RSA output is present. Save/write failures keep their specific diagnostic
+instead of adding this general waiting hint.
+
+When this run successfully launched Chrome, the dumper then checks that the
+focused window belongs exactly to `com.android.chrome`. If it does, it makes
+one foreground-tab refresh with `adb -s SELECTED_SERIAL shell input keyevent
+KEYCODE_F5`. It never retries, force-stops, relaunches, or creates a tab for
+this recovery attempt. It skips the attempt for `--no-browser`, a failed or
+skipped automatic launch, an already-saved pair, another focused application,
+an Android permission window, or an unknown focus. The dumper continues waiting
+indefinitely while the session remains healthy. This refresh changes no
+persistent Chrome setting, so the existing undo instructions below do not need
+an additional step.
+
+Manual and full-auto runs use this dumper-owned warning and refresh behavior.
+Full auto mirrors the dumper status event and does not add an independent timer
+or refresh attempt.
 
 ## 📱 Older and newer Chrome
 
@@ -132,6 +160,8 @@ as presumed Android fixes.
 <summary>Chromium source and testing documentation</summary>
 
 - [Chrome 109 notification prompt controller](https://github.com/chromium/chromium/blob/109.0.5414.123/chrome/browser/notifications/android/java/src/org/chromium/chrome/browser/notifications/permissions/NotificationPermissionController.java): `permission_request_max_count` governs both the rationale and the controller's Android permission request.
+- [Android Chrome keyboard shortcuts](https://github.com/chromium/chromium/blob/109.0.5414.123/chrome/android/java/src/org/chromium/chrome/browser/KeyboardShortcuts.java): an unmodified F5 requests a normal reload of the current tab. The same route was checked in Chrome 69 and 153.
+- [Android's new-task launch behavior](https://developer.android.com/reference/android/content/Intent#FLAG_ACTIVITY_NEW_TASK): starts the activity in a task or brings its existing task to the foreground.
 - [Chrome 153 Android switches](https://github.com/chromium/chromium/blob/153.0.8010.52/chrome/browser/flags/android/java_templates/ChromeSwitches.java.tmpl) and [feature-engagement documentation](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/components/feature_engagement/README.md): startup and in-product-help controls.
 - [Chrome 153 startup promo gate](https://github.com/chromium/chromium/blob/153.0.8010.52/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedRootUiCoordinator.java) and [Android default-browser promo gate](https://github.com/chromium/chromium/blob/153.0.8010.52/chrome/browser/ui/android/default_browser_promo/java/src/org/chromium/chrome/browser/ui/default_browser_promo/DefaultBrowserPromoUtils.java): the Android code checks the dedicated suppression switches before showing these offers.
 - [Chrome 109 Privacy Sandbox feature definition](https://github.com/chromium/chromium/blob/109.0.5414.123/components/privacy_sandbox/privacy_sandbox_features.cc) and [prompt gate](https://github.com/chromium/chromium/blob/109.0.5414.123/chrome/browser/privacy_sandbox/privacy_sandbox_service.cc): the enabled suppression feature returns no required prompt; it is absent from Chrome 153 after that onboarding's retirement.

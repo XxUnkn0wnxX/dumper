@@ -30,7 +30,7 @@ if __name__ == '__main__':
             print('\nStopped by user.', file=sys.stderr)
         raise SystemExit(0)
 
-from Helpers.Browser import DEFAULT_SITE_FILE, close_test_browser, launch_test_page
+from Helpers.Browser import DEFAULT_SITE_FILE, close_test_browser, launch_test_page, refresh_test_page
 
 # Keep --help usable even when the venv is missing required packages. Only
 # dependency import failures are deferred; broken project imports still surface.
@@ -93,6 +93,38 @@ def _close_device_and_browser(device):
         device.close()
     finally:
         close_test_browser(device_id, logging.getLogger('main'))
+
+
+# ------------------------------------------------------------------------------
+# CAPTURE PROGRESS AND ONE-SHOT BROWSER RECOVERY
+# The dumper owns the warning and refresh in both manual and full-auto runs.
+# Publishing a status event lets the controller mirror it without another timer.
+# ------------------------------------------------------------------------------
+def _check_capture_progress(device):
+    if device.warn_if_no_pair() is not True:
+        return
+    should_refresh = (
+        getattr(device, 'browser_launched', False) is True
+        and getattr(device, '_browser_refresh_attempted', False) is not True
+        and getattr(device, '_matching_pair_save_attempted', False) is not True
+        and device._has_verified_saved_pair() is not True
+    )
+    if should_refresh:
+        # Consume the attempt before any status/ADB operation. A failed or
+        # skipped refresh must never create an automatic refresh loop.
+        device._browser_refresh_attempted = True
+    emit_event(
+        'no_pair_yet',
+        device_id=device.usb_device.id,
+        android_api=str(device.android_api_level),
+        browser_refresh_requested=should_refresh,
+    )
+    # A capture callback may finish while the status event is being flushed.
+    # Keep the attempt consumed but avoid refreshing after that completion.
+    if (should_refresh
+            and getattr(device, '_matching_pair_save_attempted', False) is not True
+            and device._has_verified_saved_pair() is not True):
+        refresh_test_page(device.usb_device.id, logging.getLogger('main'))
 
 
 # ------------------------------------------------------------------------------
@@ -188,6 +220,7 @@ def main():
                 )
             return
         logger.info('Functions hooked; waiting for Widevine playback.')
+        device.start_capture_wait()
         emit_event(
             'hooks_ready',
             device_id=device.usb_device.id,
@@ -196,16 +229,21 @@ def main():
         )
         # Launch only after a library is ready to capture. Browser setup is optional:
         # its helper reports expected ADB/Chrome errors while capture stays active.
+        device.browser_launched = False
         if args.no_browser:
             logger.info(
                 'Automatic browser launch disabled. Open a Widevine test page on '
                 'the selected Android device; the configured URL is in %s.', args.site_file,
             )
-        elif not launch_test_page(device.usb_device.id, logger, site_file=args.site_file):
-            logger.warning(
-                'Capture remains active. Open a Widevine test page manually on '
-                'the selected Android device; check %s for the configured URL.', args.site_file,
-            )
+        else:
+            device.browser_launched = launch_test_page(
+                device.usb_device.id, logger, site_file=args.site_file,
+            ) is True
+            if not device.browser_launched:
+                logger.warning(
+                    'Capture remains active. Open a Widevine test page manually on '
+                    'the selected Android device; check %s for the configured URL.', args.site_file,
+                )
         ready = True
         return device
     finally:
@@ -240,7 +278,7 @@ def run():
         while True:
             time.sleep(1)
             connection.check()
-            device.warn_if_no_pair()
+            _check_capture_progress(device)
     except KeyboardInterrupt:
         with ignore_interrupts():
             logging.getLogger('main').info('Stopped by user.')
