@@ -6,12 +6,8 @@ Both manual dumper runs and full auto use the same browser setup. Before opening
 the configured test page, the launcher applies testing flags to suppress Chrome's
 first-run screens, startup promotions, notification onboarding, and supported
 help bubbles. It then force-stops Chrome and launches the page afresh using
-`am start -f 0x10000000` (`FLAG_ACTIVITY_NEW_TASK`) targeting `com.android.chrome`,
-which asks Android to bring Chrome's task to the foreground. This intent flag has
-existed since API 1. If Android explicitly rejects the launch option, the dumper
-warns and tries one normal launch without the focus flag. Timeouts, connection
-failures, and permission errors do not trigger a second launch. Keep the device
-unlocked; Android permission dialogs can still appear above the browser.
+the normal `am start -a android.intent.action.VIEW -p com.android.chrome -d URL`
+command. Keep the device unlocked and Chrome visible while waiting for playback.
 
 The target must be the selected, online Android device with `com.android.chrome`
 installed and enabled. This works through ADB; it does not depend on a Pixel model
@@ -53,16 +49,18 @@ warning is generic when no RSA key has arrived and keeps the layout advice when
 RSA output is present. Save/write failures keep their specific diagnostic
 instead of adding this general waiting hint.
 
-When this run successfully launched Chrome, the dumper then checks that the
-focused window belongs exactly to `com.android.chrome`. If it does, it makes
-one foreground-tab refresh with `adb -s SELECTED_SERIAL shell input keyevent
-KEYCODE_F5`. It never retries, force-stops, relaunches, or creates a tab for
-this recovery attempt. It skips the attempt for `--no-browser`, a failed or
-skipped automatic launch, an already-saved pair, another focused application,
-an Android permission window, or an unknown focus. The dumper continues waiting
-indefinitely while the session remains healthy. This refresh changes no
-persistent Chrome setting, so the existing undo instructions below do not need
-an additional step.
+When this run successfully launched Chrome, the dumper sends one refresh request
+with `adb -s SELECTED_SERIAL shell input keyevent KEYCODE_F5`. There is no window
+focus query or focus-based skip. Keep Chrome visible: Android delivers F5 to the
+active window, so another app or dialog may prevent Chrome receiving it. A sent
+request does not guarantee a page reload or successful playback.
+
+It never retries, force-stops, relaunches, or creates a tab for this recovery
+attempt. It skips the attempt for `--no-browser`, a failed or skipped automatic
+launch, or a matching pair already being saved or completed. The dumper continues
+waiting indefinitely while the session remains healthy. This refresh changes no
+persistent Chrome setting, so the existing undo instructions below need no
+additional step.
 
 Manual and full-auto runs use this dumper-owned warning and refresh behavior.
 Full auto mirrors the dumper status event and does not add an independent timer
@@ -164,8 +162,6 @@ as presumed Android fixes.
 
 - [Chrome 109 notification prompt controller](https://github.com/chromium/chromium/blob/109.0.5414.123/chrome/browser/notifications/android/java/src/org/chromium/chrome/browser/notifications/permissions/NotificationPermissionController.java): `permission_request_max_count` governs both the rationale and the controller's Android permission request.
 - [Android Chrome keyboard shortcuts](https://github.com/chromium/chromium/blob/109.0.5414.123/chrome/android/java/src/org/chromium/chrome/browser/KeyboardShortcuts.java): an unmodified F5 requests a normal reload of the current tab. The same route was checked in Chrome 69 and 153.
-- [Android's new-task launch behavior](https://developer.android.com/reference/android/content/Intent#FLAG_ACTIVITY_NEW_TASK): starts the activity in a task or brings its existing task to the foreground.
-- [ADB intent arguments](https://developer.android.com/tools/adb#IntentSpec): pass the numeric intent flags with `-f`; `am` does not provide a `--activity-new-task` option.
 - [Chrome 153 Android switches](https://github.com/chromium/chromium/blob/153.0.8010.52/chrome/browser/flags/android/java_templates/ChromeSwitches.java.tmpl) and [feature-engagement documentation](https://chromium.googlesource.com/chromium/src/+/refs/heads/main/components/feature_engagement/README.md): startup and in-product-help controls.
 - [Chrome 153 startup promo gate](https://github.com/chromium/chromium/blob/153.0.8010.52/chrome/android/java/src/org/chromium/chrome/browser/tabbed_mode/TabbedRootUiCoordinator.java) and [Android default-browser promo gate](https://github.com/chromium/chromium/blob/153.0.8010.52/chrome/browser/ui/android/default_browser_promo/java/src/org/chromium/chrome/browser/ui/default_browser_promo/DefaultBrowserPromoUtils.java): the Android code checks the dedicated suppression switches before showing these offers.
 - [Chrome 109 Privacy Sandbox feature definition](https://github.com/chromium/chromium/blob/109.0.5414.123/components/privacy_sandbox/privacy_sandbox_features.cc) and [prompt gate](https://github.com/chromium/chromium/blob/109.0.5414.123/chrome/browser/privacy_sandbox/privacy_sandbox_service.cc): the enabled suppression feature returns no required prompt; it is absent from Chrome 153 after that onboarding's retirement.

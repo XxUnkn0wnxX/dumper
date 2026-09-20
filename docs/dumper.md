@@ -166,7 +166,7 @@ unmatched request alone does not create a pair. As soon as a license request is
 parsed, the dumper prints the client ID's `widevine_cdm_version` at INFO level,
 once per distinct reported version. If no completed, verified pair exists about
 35 seconds after successful hook readiness, including browser startup time, the
-dumper emits one warning and performs the single refresh check described in the
+dumper emits one warning and attempts the single refresh described in the
 [Chrome guide](chrome.md#post-readiness-warning-and-refresh). Missing output
 alone does not prove a version mismatch; the warning remains generic without
 RSA output and retains layout advice when RSA output is present.

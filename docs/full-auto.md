@@ -87,7 +87,7 @@ layout; Android API level alone cannot establish that the capture is supported. 
 report ready, the dumper's progress check warns after roughly 35 seconds if no
 completed, verified pair exists, including time spent in browser startup, but waits
 indefinitely while the session remains healthy for user playback or a browser
-permission action. The dumper owns the single refresh check described in the
+permission action. The dumper owns the single refresh attempt described in the
 [Chrome guide](chrome.md#post-readiness-warning-and-refresh); full auto mirrors
 its status event and does not run a separate timer or refresh.
 

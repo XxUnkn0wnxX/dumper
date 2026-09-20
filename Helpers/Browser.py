@@ -9,7 +9,6 @@ the same serial must be online in ADB before any Chrome command is attempted.
 from dataclasses import dataclass
 import logging
 from pathlib import Path
-import re
 import shlex
 import subprocess
 from typing import Iterable
@@ -33,11 +32,6 @@ _MISSING_MARKER = '__DUMPER_CHROME_FLAGS_MISSING__'
 _EXISTS_MARKER = '__DUMPER_CHROME_FLAGS_EXISTS__'
 _SYMLINK_MARKER = '__DUMPER_CHROME_FLAGS_SYMLINK__'
 _ERROR_MARKERS = ('Error:', 'SecurityException', 'Exception occurred')
-_CURRENT_FOCUS_LINE = re.compile(r'^\s*mCurrentFocus\s*=\s*(?P<window>.+?)\s*$')
-_FOCUSED_WINDOW = re.compile(
-    r'^Window\{[^}\n]*\bu\d+\s+'
-    r'(?P<package>[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)*)/(?P<activity>[^\s}]+)\}$'
-)
 
 # Keep the browser policy in data so a verified compatibility addition is a
 # small, reviewable change.  Scalar switches are compared by their name before
@@ -499,38 +493,14 @@ def launch_test_page(device_id: str, logger, *, site_file=DEFAULT_SITE_FILE) -> 
         )
         _require_success(stop_result, 'Stopping Chrome before launch')
 
-        # FLAG_ACTIVITY_NEW_TASK brings Chrome's task forward. Android's `am`
-        # accepts this through -f; it has no --activity-new-task option.
-        launch_args = ('am', 'start', '-a', 'android.intent.action.VIEW',
-                       '-p', CHROME_PACKAGE)
         start_result = _adb_shell(
             adb,
             device_id,
-            shlex.join((*launch_args, '-f', '0x10000000', '-d', url)),
+            shlex.join(('am', 'start', '-a', 'android.intent.action.VIEW',
+                        '-p', CHROME_PACKAGE, '-d', url)),
             'Opening the DRM test URL',
         )
-        try:
-            _require_success(start_result, 'Opening the DRM test URL')
-        except BrowserSetupError as error:
-            # An explicit argument rejection happens before Android launches
-            # the activity. Retry once without the optional focus flags. Do
-            # not retry timeouts or transport failures: launch may have begun.
-            rejection = str(error).lower()
-            if not any(marker in rejection for marker in (
-                'unknown option', 'unrecognized option', 'unsupported option',
-                'unknown flag', 'unsupported flag', 'invalid flag',
-            )):
-                raise
-            logger.warning(
-                'Android rejected the Chrome focus option; trying one normal browser launch.'
-            )
-            start_result = _adb_shell(
-                adb,
-                device_id,
-                shlex.join((*launch_args, '-d', url)),
-                'Opening the DRM test URL without focus flags',
-            )
-            _require_success(start_result, 'Opening the DRM test URL without focus flags')
+        _require_success(start_result, 'Opening the DRM test URL')
         logger.info(
             'Opened %s in Chrome on %s; autoplay is configured, but the page controls playback.',
             url,
@@ -545,55 +515,16 @@ def launch_test_page(device_id: str, logger, *, site_file=DEFAULT_SITE_FILE) -> 
         return False
 
 
-def _focused_window_package(output: str) -> tuple[str | None, str]:
-    """Return the exact package of one well-formed ``mCurrentFocus`` window."""
-    windows = [
-        match.group('window').strip()
-        for line in output.splitlines()
-        if (match := _CURRENT_FOCUS_LINE.match(line)) is not None
-    ]
-    if not windows:
-        return None, 'the current focus is absent'
-    if len(windows) != 1:
-        return None, 'the current focus is ambiguous'
-
-    window = windows[0]
-    if window.lower() in {'null', 'none'}:
-        return None, 'the current focus is null'
-    match = _FOCUSED_WINDOW.fullmatch(window)
-    if match is None:
-        return None, 'the current focus window is malformed'
-    package = match.group('package')
-    if 'permission' in package.lower():
-        return package, 'an Android permission window is focused'
-    if package != CHROME_PACKAGE:
-        return package, f'the current focus belongs to {package}'
-    return package, 'Chrome is focused'
-
-
 def refresh_test_page(device_id: str, logger) -> bool:
-    """Request one refresh from Chrome only when its window is focused.
+    """Send one F5 event to the selected Android device without a focus probe.
 
-    The focus snapshot is a short race window: Android may change focus after
-    the dump and before the key event.  We deliberately do not retry, steal
-    focus, relaunch Chrome, or claim that playback succeeded.
+    The caller owns the one-shot timer and successful-launch gate. Android
+    delivers this key to the active window, so users should keep Chrome open.
     """
     try:
         if not isinstance(device_id, str) or not device_id:
             raise ValueError('device ID must be a non-empty string')
         adb = resolve_adb(None)
-        focus_result = _adb_shell(
-            adb,
-            device_id,
-            shlex.join(('dumpsys', 'window')),
-            'Checking the focused Android window',
-        )
-        focus_output = _require_success(focus_result, 'Checking the focused Android window')
-        package, reason = _focused_window_package(focus_output)
-        if package != CHROME_PACKAGE:
-            logger.warning(f'Skipping Chrome page refresh on {device_id}: {reason}.')
-            return False
-
         refresh_result = _adb_shell(
             adb,
             device_id,

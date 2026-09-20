@@ -24,9 +24,6 @@ class BrowserHelperTests(unittest.TestCase):
         self.calls = []
         self.flags_mode = 'existing'
         self.chrome_enabled = True
-        self.focus_content = (
-            'mCurrentFocus=Window{abc u0 com.android.chrome/org.chromium.chrome.Main}\n'
-        )
         self.flags_content = (
             'chrome --keep="two words" --user-agent="Keep Me" '
             '--literal=C:\\temp --dollar=$HOME --backtick=`tick` '
@@ -61,8 +58,6 @@ class BrowserHelperTests(unittest.TestCase):
         # must not be mistaken for the read command.
         if 'cat >' in remote:
             return self.result('')
-        if remote == 'dumpsys window':
-            return self.result(self.focus_content)
         if remote == 'input keyevent KEYCODE_F5':
             return self.result('')
         if remote.startswith('if test -L') and 'chrome-command-line' in remote:
@@ -80,8 +75,6 @@ class BrowserHelperTests(unittest.TestCase):
         if remote == 'am force-stop com.android.chrome':
             return self.result('')
         if remote.startswith('am start'):
-            if '--activity-new-task' in shlex.split(remote):
-                return self.result('Error: Unknown option --activity-new-task\n', returncode=1)
             return self.result('Starting: Intent { act=android.intent.action.VIEW }\n')
         self.fail(f'unexpected ADB command: {remote!r}')
 
@@ -158,7 +151,7 @@ class BrowserHelperTests(unittest.TestCase):
             start_args,
             [
                 'am', 'start', '-a', 'android.intent.action.VIEW',
-                '-p', 'com.android.chrome', '-f', '0x10000000',
+                '-p', 'com.android.chrome',
                 '-d', 'https://example.test/drm#fragment',
             ],
         )
@@ -194,65 +187,6 @@ class BrowserHelperTests(unittest.TestCase):
         for _command, kwargs in self.calls:
             self.assertIs(kwargs['shell'], False)
             self.assertEqual(kwargs['timeout'], 5)
-
-    def test_launch_retries_once_without_numeric_new_task_flag_on_explicit_rejection(self):
-        def unsupported_numeric_flag(command, **kwargs):
-            remote = command[4] if len(command) > 4 else ''
-            if remote.startswith('am start') and '-f' in shlex.split(remote):
-                self.calls.append((command, kwargs))
-                # Exit zero is intentional: _require_success must still treat
-                # the explicit Android error marker as a failed start.
-                return self.result('Error: Unknown option -f\n')
-            return self.run_command(command, **kwargs)
-
-        with mock.patch.object(browser, 'resolve_adb', return_value='/adb'), \
-                mock.patch.object(browser.subprocess, 'run', side_effect=unsupported_numeric_flag):
-            self.assertTrue(self.launch())
-
-        starts = [
-            shlex.split(command[4])
-            for command, _kwargs in self.calls
-            if len(command) > 4 and command[4].startswith('am start')
-        ]
-        self.assertEqual(len(starts), 2)
-        self.assertEqual(
-            starts[0],
-            [
-                'am', 'start', '-a', 'android.intent.action.VIEW',
-                '-p', 'com.android.chrome', '-f', '0x10000000',
-                '-d', 'https://example.test/drm#fragment',
-            ],
-        )
-        self.assertEqual(
-            starts[1],
-            [
-                'am', 'start', '-a', 'android.intent.action.VIEW',
-                '-p', 'com.android.chrome',
-                '-d', 'https://example.test/drm#fragment',
-            ],
-        )
-        self.assertTrue(all(command[0:4] == ['/adb', '-s', 'emulator-5554', 'shell']
-                            for command, _kwargs in self.calls
-                            if len(command) > 4 and command[4].startswith('am start')))
-
-    def test_launch_fallback_failure_does_not_retry_again(self):
-        def fallback_fails(command, **kwargs):
-            remote = command[4] if len(command) > 4 else ''
-            if remote.startswith('am start'):
-                self.calls.append((command, kwargs))
-                if '-f' in shlex.split(remote):
-                    return self.result('Error: Unknown option: -f\n')
-                return self.result('SecurityException: start denied\n', returncode=1)
-            return self.run_command(command, **kwargs)
-
-        with mock.patch.object(browser, 'resolve_adb', return_value='/adb'), \
-                mock.patch.object(browser.subprocess, 'run', side_effect=fallback_fails):
-            self.assertFalse(self.launch())
-
-        starts = [command[4] for command, _kwargs in self.calls
-                  if len(command) > 4 and command[4].startswith('am start')]
-        self.assertEqual(len(starts), 2)
-        self.assertFalse(any('Opened ' in call.args[0] for call in self.logger.info.call_args_list))
 
     def test_launch_start_timeout_security_error_and_cancellation_do_not_retry(self):
         cases = {
@@ -535,7 +469,7 @@ class BrowserHelperTests(unittest.TestCase):
         self.assertFalse(kwargs['shell'])
         self.assertEqual(kwargs['timeout'], 5)
 
-    def test_refresh_uses_exact_serial_and_one_focused_chrome_keyevent(self):
+    def test_refresh_uses_exact_serial_and_one_keyevent_without_focus_probe(self):
         with mock.patch.object(browser, 'resolve_adb', return_value='/adb'), \
                 mock.patch.object(browser.subprocess, 'run', side_effect=self.run_command):
             self.assertTrue(browser.refresh_test_page('emulator-5554', self.logger))
@@ -543,7 +477,6 @@ class BrowserHelperTests(unittest.TestCase):
         self.assertEqual(
             [command for command, _kwargs in self.calls],
             [
-                ['/adb', '-s', 'emulator-5554', 'shell', 'dumpsys window'],
                 ['/adb', '-s', 'emulator-5554', 'shell', 'input keyevent KEYCODE_F5'],
             ],
         )
@@ -553,71 +486,25 @@ class BrowserHelperTests(unittest.TestCase):
         )
         self.assertIn('does not guarantee playback', self.logger.info.call_args.args[0])
 
-    def test_refresh_rejects_non_chrome_or_ambiguous_focus_without_keyevent(self):
-        cases = {
-            'other app': 'mCurrentFocus=Window{abc u0 com.android.settings/.Settings}\n',
-            'prefix package': 'mCurrentFocus=Window{abc u0 com.android.chrome.evil/.Main}\n',
-            'permission UI': (
-                'mCurrentFocus=Window{abc u0 '
-                'com.google.android.permissioncontroller/.GrantPermissionsActivity}\n'
-            ),
-            'malformed': 'mCurrentFocus=Window{abc u0 com.android.chrome}\n',
-            'null': 'mCurrentFocus=null\n',
-            'absent': 'mFocusedApp=Window{abc u0 com.android.chrome/.Main}\n',
-            'ambiguous': (
-                'mCurrentFocus=Window{abc u0 com.android.chrome/.Main}\n'
-                'mCurrentFocus=Window{def u0 com.android.settings/.Settings}\n'
-            ),
-        }
-        for label, focus in cases.items():
-            with self.subTest(label=label):
-                self.focus_content = focus
-                self.calls.clear()
-                with mock.patch.object(browser, 'resolve_adb', return_value='/adb'), \
-                        mock.patch.object(browser.subprocess, 'run', side_effect=self.run_command):
-                    self.assertFalse(browser.refresh_test_page('emulator-5554', self.logger))
-                self.assertEqual(len(self.calls), 1)
-                self.assertEqual(self.calls[0][0][4], 'dumpsys window')
-
     def test_refresh_failures_are_nonfatal_and_cancellation_propagates(self):
-        with mock.patch.object(browser, 'resolve_adb', return_value='/adb'), \
-                mock.patch.object(browser.subprocess, 'run',
-                                  side_effect=subprocess.TimeoutExpired('/adb', 5)):
-            self.assertFalse(browser.refresh_test_page('emulator-5554', self.logger))
-        self.assertEqual(len(self.calls), 0)
-
-        self.calls.clear()
-        failed_focus = self.result('Error: dumpsys unavailable\n', returncode=1)
-        with mock.patch.object(browser, 'resolve_adb', return_value='/adb'), \
-                mock.patch.object(browser.subprocess, 'run', return_value=failed_focus) as run:
-            self.assertFalse(browser.refresh_test_page('emulator-5554', self.logger))
-        self.assertEqual(run.call_count, 1)
-
-        focused = self.result('mCurrentFocus=Window{abc u0 com.android.chrome/.Main}\n')
         for outcome in (self.result('Error: input denied', returncode=1),
                         subprocess.TimeoutExpired('/adb', 5), KeyboardInterrupt()):
             with self.subTest(refresh_outcome=outcome), \
                     mock.patch.object(browser, 'resolve_adb', return_value='/adb'), \
                     mock.patch.object(browser.subprocess, 'run',
-                                      side_effect=[focused, outcome]) as run:
+                                      side_effect=[outcome]) as run:
                 if isinstance(outcome, KeyboardInterrupt):
                     with self.assertRaises(KeyboardInterrupt):
                         browser.refresh_test_page('emulator-5554', self.logger)
                 else:
                     self.assertFalse(browser.refresh_test_page('emulator-5554', self.logger))
-                self.assertEqual(run.call_count, 2)
+                self.assertEqual(run.call_count, 1)
                 self.assertEqual(run.call_args.args[0][-1], 'input keyevent KEYCODE_F5')
 
-        self.calls.clear()
         with mock.patch.object(browser, 'resolve_adb', side_effect=browser.SetupError('adb missing')), \
                 mock.patch.object(browser.subprocess, 'run') as run:
             self.assertFalse(browser.refresh_test_page('emulator-5554', self.logger))
         run.assert_not_called()
-
-        with mock.patch.object(browser, 'resolve_adb', return_value='/adb'), \
-                mock.patch.object(browser.subprocess, 'run', side_effect=KeyboardInterrupt):
-            with self.assertRaises(KeyboardInterrupt):
-                browser.refresh_test_page('emulator-5554', self.logger)
 
     def test_close_does_not_read_flags_or_change_chrome_data(self):
         with mock.patch.object(browser, 'resolve_adb', return_value='/adb'), \
