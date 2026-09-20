@@ -300,14 +300,20 @@ integrity, network failures, exact managed-process identity, foreground terminal
 input/output, Ctrl+C, bounded shutdown, nested `su-c`/`su-0` exits, and error statuses. The
 terminal tests are skipped on Windows because they use POSIX PTYs.
 
+The user confirmed capture testing through **Android 13 / API 33** on
+2026-09-20. The overall Android 9–13 / API 28–33 validation record is maintained
+in the [testing guide](testing.md#verified-scope), alongside the narrower helper
+checks below.
+
 The earlier manual-start workflow was reported working on Android 9 / API 28.
 A background-start implementation timed out on Android 10 / API 29 and was
 replaced with foreground startup. On Android 11 / API 30 x86_64 with Frida
 17.18.0 and `su-0`, a live test reproduced a server that disconnected the
 dumper after Ctrl+C but stalled during its own shutdown; the five-second fallback
 stopped it, returned a root prompt in `/data/local/tmp`, and preserved both shell
-exits. Replacement, other Android/root-manager combinations, native Windows
-terminals, and device/ADB loss still need live testing.
+exits. The general capture confirmation does not cover every helper argument,
+root-manager combination, native Windows terminal, or device/ADB-loss scenario;
+use the optional checklist below when validating those on another configuration.
 Automatic Python package changes are covered with mocked pip commands;
 upgrade/downgrade compatibility on each real host still needs confirmation.
 

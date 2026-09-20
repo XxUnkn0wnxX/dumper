@@ -143,15 +143,21 @@ temporary directories. Live device claims below remain separate evidence.
 
 ## Verified scope
 
+**User-confirmed capture testing: Android 9–13 / API 28–33**, completed on
+2026-09-20 with the tested emulator images. Earlier full-auto logs and saved
+files were also independently checked on Android 12 / API 31 x86_64 with
+Frida 17.18.0 and CDM 16.1.0: both files formed a matching pair and cleanup
+completed. Host-platform and device-specific limits are recorded below.
+
 | Area | Evidence | Still needs verification |
 | --- | --- | --- |
 | Python | Current development and regression checks run on Python 3.14.0; tested up to Python 3.14. The stated minimum is Python 3.10. | A complete matrix across every supported Python and host OS version. |
-| Experimental full auto | Offline controller/logging tests and local POSIX process supervision. Existing-venv background initialization and a deliberate missing-ADB failure were checked without contacting a device. | End-to-end Android capture and native Windows lifecycle checks. |
-| Manual capture | Reported success on a rooted Pixel 6 Pro running Android 13 with manual layout `17.0.0`. | Other devices and library builds. |
-| Automatic layout detection | User-confirmed live success on Android 9 / API 28 with plain `python dump_keys.py` (2026-09-20): Android selection, `libwvhidl.so` detection, automatic `args[4]` layout, and key retrieval. Offline checks cover 12 library fixtures from eight Android 9–13 SDK packages, including Android 12L. | Live automatic capture on other Android versions and library builds. |
-| Protobuf | Schema and serialization regressions using synthetic requests from the original Protobuf 3.19.3 binding; updated dumper reported working on Android 9. | Further device coverage and validation after future compiler/runtime updates. |
-| Capture folders | Synthetic output tests for CDM/API labels, timestamp collisions, and preservation of existing pairs. | Live capture using the new folder layout. |
-| Frida setup helper | User-confirmed Android 9 setup with the earlier manual-start workflow (2026-09-20), mocked lifecycle/cache tests, local terminal checks for Ctrl+C and foreground lifetime, and an official release download with checksum, extraction, cache reuse, and cleanup checks. | Live verification of corrected foreground startup/replacement flow, `--shell`, and root-manager behavior on other devices. |
+| Experimental full auto | Offline controller/logging tests and local POSIX process supervision. Independent log and file parsing/matching verified one complete Android 12 / API 31 x86_64 run with Frida 17.18.0, CDM 16.1.0, and cleanup. | A broader full-auto Android matrix and native Windows lifecycle checks. |
+| Manual capture | User-confirmed capture testing through API 33. Earlier physical-device success was reported on a rooted Pixel 6 Pro running Android 13 with manual layout `17.0.0`. | Other physical devices and library builds. |
+| Automatic layout detection | User-confirmed capture range is API 28–33. Detailed earlier examples include Android 9 / API 28 with plain `python dump_keys.py`, `libwvhidl.so`, and `args[4]`, plus the verified API 31 full-auto run using `args[5]`. Offline checks cover 12 library fixtures from eight Android 9–13 SDK packages, including Android 12L. | Additional device/library builds and Android 14+ signatures. |
+| Protobuf | Updated binding exercised by the user-confirmed capture workflow through API 33. Schema and serialization regressions also use synthetic requests from the original Protobuf 3.19.3 binding. | Validation after future schema/compiler/runtime updates. |
+| Capture folders | Live capture with the current layout, including an independently matched pair in `CDM 16.1.0 - API 31`; synthetic tests cover labels, timestamp collisions, and preservation of existing pairs. | Additional host filesystem behavior and failure scenarios. |
+| Frida setup helper | User-confirmed setup on Android 9, later verified API 31 full-auto setup with Frida 17.18.0, and live API 30 shutdown recovery. Mocked lifecycle/cache tests and local terminal checks cover other paths; an official release download was checked for integrity, extraction, cache reuse, and cleanup. | Additional `--shell` and root-manager combinations, and native Windows terminals. |
 | Environment initialization and Frida package sync | Mocked venv/pip, dependency repair/failure, platform conditions, version selection, relaunch, and cancellation checks. On macOS, existing-venv initialization passed both inside and outside the venv; a real outside-venv relaunch preserved arguments and working directory without installing packages. | Fresh-environment installation and real package transitions on supported macOS, Linux, and Windows hosts; native Windows relaunch. |
 
 **Android 14 and later are outside this fork's current verified scope.** An SDK

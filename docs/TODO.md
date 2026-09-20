@@ -19,10 +19,9 @@ Android 14–17 support is currently unverified.
 
 ## Deferred WVD helper
 
-- [ ] After the initial dump tests are complete, add a helper that converts
-  dumped `client_id.bin` and `private_key.pem` into a `.wvd` file. Use the
-  separate `.venv-wvd` and `requirements-wvd.txt` environment described in the
-  [WVD tooling guide](wvd.md).
+- [ ] Add a helper that converts dumped `client_id.bin` and `private_key.pem`
+  into a `.wvd` file. Use the separate `.venv-wvd` and `requirements-wvd.txt`
+  environment described in the [WVD tooling guide](wvd.md).
 - [ ] Give that helper its own automatic environment initialization and relaunch
   using the shared bootstrap approach, keeping WVD dependencies separate from
   the dumper's environment.

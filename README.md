@@ -4,7 +4,9 @@
 > **Experimental branch — active rework**
 >
 > This branch is experimental and is currently being reworked. Features and
-> behavior may change, and live device testing is still in progress.
+> behavior may change. Capture testing is user-confirmed on Android 9–13 /
+> API 28–33 (2026-09-20); see the [testing guide](docs/testing.md) for exact
+> evidence and remaining limits.
 
 A Python and Frida tool for capturing Widevine L3 client IDs and matching private
 keys from rooted Android devices. This fork includes Android device selection,

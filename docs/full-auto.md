@@ -141,9 +141,12 @@ diagnosis.
 
 ## Platform scope
 
-Local tests cover POSIX background supervision, and native Windows supervision
-is mocked. The latest user logs plus independent file parsing and matching
-verified one successful complete pair and cleanup on Android 12 / API 31
-x86_64 with Frida 17.18.0 and CDM 16.1.0. That evidence applies to the tested
-target only and is not a blanket API or platform compatibility claim. The new
-Chrome-stop cleanup paths have not yet been device-tested.
+The user confirmed capture testing through **Android 13 / API 33** on
+2026-09-20; the overall tested range is Android 9–13 / API 28–33. See the
+[verified-scope record](testing.md#verified-scope) for the evidence and limits.
+
+For full auto specifically, earlier session logs plus independent file parsing
+and key matching verified a complete pair and cleanup on Android 12 / API 31
+x86_64 with Frida 17.18.0 and CDM 16.1.0. Local tests also cover POSIX background
+supervision. Native Windows supervision remains mocked, and the general capture
+confirmation does not establish every host, device, or cancellation scenario.
