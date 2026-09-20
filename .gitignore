@@ -138,4 +138,5 @@ frida-server-*-android-*
 
 # Local development files
 tmp/
+.tmp/
 AGENTS.md

@@ -13,7 +13,7 @@ import tempfile
 # ------------------------------------------------------------------------------
 # REPOSITORY PATHS
 # Resolve from this file so maintainers can invoke the helper from any directory.
-# Generated files are staged under the repository's ignored tmp/ directory.
+# Generated files are staged under the repository's ignored .tmp/ directory.
 # ------------------------------------------------------------------------------
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA = Path('Helpers/wv_proto2.proto')
@@ -117,8 +117,8 @@ def main():
     try:
         compiler = run_command([args.protoc, '--version'], 'Locating protoc')
         original_requirements = (ROOT / REQUIREMENTS).read_bytes()
-        (ROOT / 'tmp').mkdir(exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix='protobuf-', dir=ROOT / 'tmp') as temporary:
+        (ROOT / '.tmp').mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix='protobuf-', dir=ROOT / '.tmp') as temporary:
             staging = Path(temporary)
             run_command([
                 args.protoc, '--proto_path=.', f'--python_out={staging}', str(SCHEMA),

@@ -1,6 +1,7 @@
 import hashlib
 from http.client import IncompleteRead
 import io
+import json
 import lzma
 from pathlib import Path
 import shlex
@@ -73,6 +74,25 @@ def release_document(version='17.18.0', architecture='x86_64', *, digest=None):
             'browser_download_url': f'https://github.com/frida/frida/releases/download/{tag}/{asset}',
         }],
     }
+
+
+def store_cached_archive(cache_root, version, architecture):
+    """Create a fully validated cache fixture without involving the network."""
+    payload = lzma.compress(elf(architecture))
+    asset_name = f'frida-server-{version}-android-{architecture}.xz'
+    archive = cache_root / asset_name
+    archive.write_bytes(payload)
+    archive_hash = hashlib.sha256(payload).hexdigest()
+    manifest = {
+        'version': version,
+        'architecture': architecture,
+        'asset_name': asset_name,
+        'archive_size': len(payload),
+        'archive_sha256': archive_hash,
+        'upstream_sha256': archive_hash,
+    }
+    (cache_root / f'{asset_name}.json').write_text(json.dumps(manifest), encoding='utf-8')
+    return setup.Release(version, version, asset_name, 'https://example.invalid/server.xz', len(payload), archive_hash), payload
 
 
 # ---------------------------------------------------------------------------
@@ -231,6 +251,11 @@ class ReleaseAndArchiveTests(unittest.TestCase):
             with self.assertRaisesRegex(setup.SetupError, 'GitHub release lookup failed'):
                 setup.fetch_json('https://api.github.com/repos/frida/frida/releases/latest')
 
+    def test_connection_reset_release_api_response_is_reported_cleanly(self):
+        with mock.patch.object(setup, 'urlopen', side_effect=ConnectionResetError('connection reset')):
+            with self.assertRaisesRegex(setup.SetupError, 'GitHub release lookup failed'):
+                setup.fetch_json('https://api.github.com/repos/frida/frida/releases/latest')
+
     def test_download_digest_xz_and_elf_validation(self):
         payload = lzma.compress(elf())
         digest = hashlib.sha256(payload).hexdigest()
@@ -260,6 +285,225 @@ class ReleaseAndArchiveTests(unittest.TestCase):
             wrong.write_bytes(elf('arm64'))
             with self.assertRaisesRegex(setup.SetupError, 'does not match'):
                 setup.validate_elf(wrong, 'x86_64')
+
+
+# ---------------------------------------------------------------------------
+# ARCHIVE CACHE
+# Cache fixtures contain only compressed synthetic ELF files and manifests. They
+# prove selection behavior without network access or any Android interaction.
+# ---------------------------------------------------------------------------
+class ArchiveCacheTests(unittest.TestCase):
+    def test_pinned_cache_hit_uses_zero_network_and_materializes_binary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_root = Path(temporary) / 'cache'
+            cache_root.mkdir()
+            store_cached_archive(cache_root, '16.3.3', 'x86_64')
+            destination = Path(temporary) / 'frida-server'
+            with mock.patch.object(setup, 'CACHE_ROOT', cache_root), \
+                    mock.patch.object(setup, 'release_for') as release:
+                artifact = setup.select_server_artifact('16.3.3', 'x86_64', destination)
+            self.assertEqual(artifact.version, '16.3.3')
+            self.assertTrue(destination.exists())
+        release.assert_not_called()
+
+    def test_latest_checks_metadata_then_uses_matching_cache(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_root = Path(temporary) / 'cache'
+            cache_root.mkdir()
+            release, _payload = store_cached_archive(cache_root, '17.18.0', 'x86_64')
+            destination = Path(temporary) / 'frida-server'
+            with mock.patch.object(setup, 'CACHE_ROOT', cache_root), \
+                    mock.patch.object(setup, 'release_for', return_value=release) as lookup, \
+                    mock.patch.object(setup, 'cache_release') as download:
+                artifact = setup.select_server_artifact(None, 'x86_64', destination)
+        self.assertEqual(artifact.version, '17.18.0')
+        lookup.assert_called_once_with(None, 'x86_64')
+        download.assert_not_called()
+
+    def test_latest_metadata_or_download_failure_uses_highest_valid_cache(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_root = Path(temporary) / 'cache'
+            cache_root.mkdir()
+            store_cached_archive(cache_root, '16.3.3', 'x86_64')
+            latest, _payload = store_cached_archive(cache_root, '17.0.0', 'x86_64')
+            destination = Path(temporary) / 'metadata-fallback-server'
+            with mock.patch.object(setup, 'CACHE_ROOT', cache_root), \
+                    mock.patch.object(setup, 'release_for', side_effect=setup.SetupError('offline')):
+                artifact = setup.select_server_artifact(None, 'x86_64', destination)
+            self.assertEqual(artifact.version, '17.0.0')
+
+            destination = Path(temporary) / 'download-fallback-server'
+            newer = setup.Release('18.0.0', '18.0.0', 'frida-server-18.0.0-android-x86_64.xz', 'https://example.invalid/new.xz', 1, None)
+            with mock.patch.object(setup, 'CACHE_ROOT', cache_root), \
+                    mock.patch.object(setup, 'release_for', return_value=newer), \
+                    mock.patch.object(setup, 'cache_release', side_effect=setup.SetupError('timeout')):
+                artifact = setup.select_server_artifact(None, 'x86_64', destination)
+            self.assertEqual(artifact.version, latest.version)
+
+    def test_empty_offline_cache_stops_without_materializing_binary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_root = Path(temporary) / 'cache'
+            destination = Path(temporary) / 'frida-server'
+            with mock.patch.object(setup, 'CACHE_ROOT', cache_root), \
+                    mock.patch.object(setup, 'release_for', side_effect=setup.SetupError('offline')):
+                with self.assertRaisesRegex(setup.SetupError, 'No valid cached'):
+                    setup.select_server_artifact(None, 'x86_64', destination)
+            self.assertFalse(destination.exists())
+
+    def test_corrupt_pinned_cache_refreshes_exactly_once_and_publishes_atomically(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_root = Path(temporary) / 'cache'
+            cache_root.mkdir()
+            release, payload = store_cached_archive(cache_root, '16.3.3', 'x86_64')
+            (cache_root / release.asset_name).write_bytes(b'corrupt')
+            destination = Path(temporary) / 'frida-server'
+
+            def download(_release, target):
+                target.write_bytes(payload)
+
+            with mock.patch.object(setup, 'CACHE_ROOT', cache_root), \
+                    mock.patch.object(setup, 'release_for', return_value=release) as lookup, \
+                    mock.patch.object(setup, 'download_asset', side_effect=download) as download_mock:
+                artifact = setup.select_server_artifact('16.3.3', 'x86_64', destination)
+            self.assertEqual(artifact.version, '16.3.3')
+            self.assertTrue(destination.exists())
+            self.assertEqual(list(cache_root.glob('download-*')), [])
+        lookup.assert_called_once_with('16.3.3', 'x86_64')
+        download_mock.assert_called_once()
+
+    def test_cache_architectures_are_separate_and_partial_download_is_not_published(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_root = Path(temporary) / 'cache'
+            cache_root.mkdir()
+            store_cached_archive(cache_root, '17.18.0', 'x86_64')
+            store_cached_archive(cache_root, '17.18.0', 'arm64')
+            with mock.patch.object(setup, 'CACHE_ROOT', cache_root):
+                self.assertEqual([entry.architecture for entry in setup.cached_artifacts('arm64')], ['arm64'])
+                failed_release = setup.Release('18.0.0', '18.0.0', 'frida-server-18.0.0-android-arm64.xz', 'https://example.invalid/new.xz', 1, None)
+                with mock.patch.object(setup, 'download_asset', side_effect=setup.SetupError('network interrupted')):
+                    with self.assertRaisesRegex(setup.SetupError, 'network interrupted'):
+                        setup.cache_release(failed_release, 'arm64')
+            self.assertFalse((cache_root / failed_release.asset_name).exists())
+            self.assertFalse((cache_root / f'{failed_release.asset_name}.json').exists())
+
+    def test_latest_metadata_mismatch_refreshes_and_newer_latest_wins_over_cache(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_root = Path(temporary) / 'cache'
+            cache_root.mkdir()
+            old_release, _old_payload = store_cached_archive(cache_root, '17.18.0', 'x86_64')
+            fresh_payload = lzma.compress(elf('x86_64') + b'new-build')
+            latest = setup.Release(
+                '18.0.0', '18.0.0', 'frida-server-18.0.0-android-x86_64.xz',
+                'https://example.invalid/latest.xz', len(fresh_payload), hashlib.sha256(fresh_payload).hexdigest(),
+            )
+
+            def download(_release, target):
+                target.write_bytes(fresh_payload)
+
+            destination = Path(temporary) / 'frida-server'
+            with mock.patch.object(setup, 'CACHE_ROOT', cache_root), \
+                    mock.patch.object(setup, 'release_for', return_value=latest), \
+                    mock.patch.object(setup, 'download_asset', side_effect=download) as refresh:
+                artifact = setup.select_server_artifact(None, 'x86_64', destination)
+            self.assertEqual(artifact.version, '18.0.0')
+            self.assertTrue((cache_root / latest.asset_name).exists())
+            self.assertNotEqual(old_release.asset_name, latest.asset_name)
+        refresh.assert_called_once()
+
+    def test_same_asset_metadata_mismatch_is_excluded_after_failed_refresh(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_root = Path(temporary) / 'cache'
+            cache_root.mkdir()
+            store_cached_archive(cache_root, '16.3.3', 'x86_64')
+            current, _payload = store_cached_archive(cache_root, '17.18.0', 'x86_64')
+            # This is the same asset name but fresh GitHub metadata says the
+            # cached bytes are stale. A failed replacement must not reuse it.
+            fresh_metadata = setup.Release(
+                current.version, current.tag, current.asset_name, current.url,
+                current.size + 1, 'f' * 64,
+            )
+            destination = Path(temporary) / 'frida-server'
+            with mock.patch.object(setup, 'CACHE_ROOT', cache_root), \
+                    mock.patch.object(setup, 'release_for', return_value=fresh_metadata), \
+                    mock.patch.object(setup, 'cache_release', side_effect=setup.SetupError('refresh failed')):
+                artifact = setup.select_server_artifact(None, 'x86_64', destination)
+            self.assertEqual(artifact.version, '16.3.3')
+            self.assertTrue(destination.exists())
+
+    def test_manifest_upstream_hash_must_match_local_archive_hash(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_root = Path(temporary) / 'cache'
+            cache_root.mkdir()
+            release, _payload = store_cached_archive(cache_root, '17.18.0', 'x86_64')
+            manifest_path = cache_root / f'{release.asset_name}.json'
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            manifest['upstream_sha256'] = 'f' * 64
+            manifest_path.write_text(json.dumps(manifest), encoding='utf-8')
+            with mock.patch.object(setup, 'CACHE_ROOT', cache_root):
+                with self.assertRaisesRegex(setup.CacheError, 'does not match'):
+                    setup.load_cached_artifact(release.asset_name, 'x86_64')
+
+    def test_corrupt_xz_or_elf_cache_is_skipped_by_offline_fallback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_root = Path(temporary) / 'cache'
+            cache_root.mkdir()
+            store_cached_archive(cache_root, '17.0.0', 'x86_64')
+            broken_release, _payload = store_cached_archive(cache_root, '18.0.0', 'x86_64')
+            broken_payload = lzma.compress(b'not-an-elf')
+            broken_archive = cache_root / broken_release.asset_name
+            broken_archive.write_bytes(broken_payload)
+            manifest_path = cache_root / f'{broken_release.asset_name}.json'
+            manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+            manifest['archive_size'] = len(broken_payload)
+            manifest['archive_sha256'] = hashlib.sha256(broken_payload).hexdigest()
+            manifest['upstream_sha256'] = manifest['archive_sha256']
+            manifest_path.write_text(json.dumps(manifest), encoding='utf-8')
+            destination = Path(temporary) / 'frida-server'
+            with mock.patch.object(setup, 'CACHE_ROOT', cache_root), \
+                    mock.patch.object(setup, 'release_for', side_effect=setup.SetupError('offline')):
+                artifact = setup.select_server_artifact(None, 'x86_64', destination)
+            self.assertEqual(artifact.version, '17.0.0')
+            self.assertTrue(destination.exists())
+
+    def test_pinned_missing_or_corrupt_version_never_falls_back_to_another_cache(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_root = Path(temporary) / 'cache'
+            cache_root.mkdir()
+            store_cached_archive(cache_root, '17.18.0', 'x86_64')
+            destination = Path(temporary) / 'frida-server'
+            with mock.patch.object(setup, 'CACHE_ROOT', cache_root), \
+                    mock.patch.object(setup, 'release_for', side_effect=setup.SetupError('pinned lookup failed')):
+                with self.assertRaisesRegex(setup.SetupError, 'pinned lookup failed'):
+                    setup.select_server_artifact('16.3.3', 'x86_64', destination)
+            self.assertFalse(destination.exists())
+
+    def test_validated_cache_is_retained_when_deployment_fails(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_root = Path(temporary) / 'cache'
+            tmp_root = Path(temporary) / '.tmp'
+            payload = lzma.compress(elf('x86_64'))
+            release = setup.Release(
+                '17.18.0', '17.18.0', 'frida-server-17.18.0-android-x86_64.xz',
+                'https://example.invalid/server.xz', len(payload), hashlib.sha256(payload).hexdigest(),
+            )
+            device = setup.AndroidDevice('emulator-5554', 'device', '')
+
+            def download(_release, target):
+                target.write_bytes(payload)
+
+            with mock.patch.object(setup, 'CACHE_ROOT', cache_root), \
+                    mock.patch.object(setup, 'TMP_ROOT', tmp_root), \
+                    mock.patch.object(setup, 'resolve_adb', return_value='/adb'), \
+                    mock.patch.object(setup, 'list_adb_devices', return_value=[device]), \
+                    mock.patch.object(setup, 'validate_target', return_value=(34, 'x86_64', 'x86_64')), \
+                    mock.patch.object(setup, 'probe_root', return_value='direct'), \
+                    mock.patch.object(setup, 'release_for', return_value=release), \
+                    mock.patch.object(setup, 'download_asset', side_effect=download), \
+                    mock.patch.object(setup, 'warn_frida_version'), \
+                    mock.patch.object(setup, 'install_server', side_effect=setup.SetupError('remote install failed')):
+                self.assertEqual(setup.main(['--no-shell']), 1)
+            self.assertTrue((cache_root / release.asset_name).exists())
+            self.assertTrue((cache_root / f'{release.asset_name}.json').exists())
 
 
 # ---------------------------------------------------------------------------
@@ -351,24 +595,24 @@ class InstallAndShellTests(unittest.TestCase):
         terminate.assert_called_once()
         sleep.assert_not_called()
 
-    def test_existing_server_reuse_missing_start_and_invalid_states(self):
-        with mock.patch.object(setup, 'managed_server_pids', return_value=['71']), \
-                mock.patch.object(setup, 'existing_server_state') as state:
-            self.assertEqual(setup.use_existing_server('/adb', 'serial', 'direct'), ('reused', ['71']))
-        state.assert_not_called()
-
+    def test_existing_server_prepare_handles_missing_orphan_and_foreground_restart(self):
         with mock.patch.object(setup, 'managed_server_pids', return_value=[]), \
-                mock.patch.object(setup, 'existing_server_state', return_value='missing'), \
-                mock.patch.object(setup, 'launch_server') as launch:
-            self.assertEqual(setup.use_existing_server('/adb', 'serial', 'direct'), ('missing', None))
-        launch.assert_not_called()
+                mock.patch.object(setup, 'existing_server_state', return_value='missing'):
+            self.assertEqual(setup.prepare_existing_server('/adb', 'serial', 'direct'), 'missing')
 
-        with mock.patch.object(setup, 'managed_server_pids', side_effect=[[], ['88']]), \
+        with mock.patch.object(setup, 'managed_server_pids', return_value=['71']), \
+                mock.patch.object(setup, 'existing_server_state', return_value='missing'), \
+                mock.patch.object(setup, 'stop_managed_servers') as stop:
+            self.assertEqual(setup.prepare_existing_server('/adb', 'serial', 'direct'), 'orphan')
+        stop.assert_not_called()
+
+        with mock.patch.object(setup, 'managed_server_pids', side_effect=[['71'], []]), \
                 mock.patch.object(setup, 'existing_server_state', return_value='executable'), \
-                mock.patch.object(setup, 'validate_existing_server', return_value='17.18.0'), \
-                mock.patch.object(setup, 'launch_server', return_value=['88']) as launch:
-            self.assertEqual(setup.use_existing_server('/adb', 'serial', 'direct'), ('started', ['88']))
-        launch.assert_called_once_with('/adb', 'serial', 'direct')
+                mock.patch.object(setup, 'validate_existing_server', return_value='17.18.0') as validate, \
+                mock.patch.object(setup, 'stop_managed_servers') as stop:
+            self.assertEqual(setup.prepare_existing_server('/adb', 'serial', 'direct'), 'ready')
+        validate.assert_called_once_with('/adb', 'serial', 'direct')
+        stop.assert_called_once_with('/adb', 'serial', 'direct')
 
         for state_name, message in (
             ('symlink', 'symlink'), ('directory', 'directory'), ('non-executable', 'not executable'),
@@ -378,27 +622,44 @@ class InstallAndShellTests(unittest.TestCase):
                     mock.patch.object(setup, 'managed_server_pids', return_value=[]), \
                     mock.patch.object(setup, 'existing_server_state', return_value=state_name):
                 with self.assertRaisesRegex(setup.SetupError, message):
-                    setup.use_existing_server('/adb', 'serial', 'direct')
+                    setup.prepare_existing_server('/adb', 'serial', 'direct')
 
-    def test_launch_reports_command_failure_or_disappearing_daemon(self):
-        with mock.patch.object(setup, 'run_root', side_effect=setup.SetupError('daemonize failed')) as root, \
-                mock.patch.object(setup, 'managed_server_pids', return_value=[]):
-            with self.assertRaisesRegex(setup.SetupError, 'daemonize failed'):
-                setup.launch_server('/adb', 'serial', 'direct')
-        self.assertIn('--daemonize', root.call_args.args[3])
-        with mock.patch.object(setup, 'run_root', return_value=Completed()), \
-                mock.patch.object(setup, 'managed_server_pids', return_value=[]):
-            with self.assertRaisesRegex(setup.SetupError, 'no managed server process'):
-                setup.launch_server('/adb', 'serial', 'direct')
-        with mock.patch.object(setup, 'run_root') as root, \
-                mock.patch.object(setup, 'managed_server_pids', return_value=['44']):
-            with self.assertRaisesRegex(setup.SetupError, 'refuse to start a duplicate'):
-                setup.launch_server('/adb', 'serial', 'direct')
-        root.assert_not_called()
-        with mock.patch.object(setup, 'run_root', return_value=Completed()), \
-                mock.patch.object(setup, 'managed_server_pids', side_effect=[[], ['44', '55'], ['55']]):
-            with self.assertRaisesRegex(setup.SetupError, 'stale managed deleted'):
-                setup.launch_server('/adb', 'serial', 'direct')
+    def test_foreground_command_and_terminal_routing_do_not_daemonize_or_time_out(self):
+        interactive = setup.foreground_server_command(True)
+        self.assertIn('/proc/[0-9]*', interactive)
+        self.assertIn("trap ':' INT", interactive)
+        self.assertIn('exec /system/bin/sh -i', interactive)
+        self.assertIn('./frida-server', interactive)
+        self.assertNotIn('--daemonize', interactive)
+        noninteractive = setup.foreground_server_command(False)
+        self.assertIn('exec ./frida-server', noninteractive)
+        self.assertNotIn('exec /system/bin/sh -i', noninteractive)
+
+        with mock.patch.object(setup.subprocess, 'run', return_value=Completed(returncode=7)) as run, \
+                mock.patch.object(setup.sys, 'stdin', TtyBuffer()), \
+                mock.patch.object(setup.sys, 'stdout', TtyBuffer()):
+            self.assertEqual(setup.run_foreground_server('/adb', 'serial', 'su-0', interactive=True), 7)
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:5], ['/adb', '-s', 'serial', 'shell', '-t'])
+        self.assertIn("su 0 sh -c", argv[-1])
+        self.assertNotIn('timeout', run.call_args.kwargs)
+        self.assertNotIn('capture_output', run.call_args.kwargs)
+
+        non_tty = mock.Mock(isatty=mock.Mock(return_value=False))
+        with mock.patch.object(setup.subprocess, 'run', return_value=Completed(returncode=0)) as run, \
+                mock.patch.object(setup.sys, 'stdin', non_tty), \
+                mock.patch.object(setup.sys, 'stdout', non_tty):
+            self.assertEqual(setup.run_foreground_server('/adb', 'serial', 'direct', interactive=False), 0)
+        self.assertEqual(run.call_args.args[0][4], '-T')
+
+        with mock.patch.object(setup.subprocess, 'run', return_value=Completed(returncode=0)) as run, \
+                mock.patch.object(setup.sys, 'stdin', TtyBuffer()), \
+                mock.patch.object(setup.sys, 'stdout', TtyBuffer()):
+            self.assertEqual(setup.run_foreground_server('/adb', 'serial', 'direct', interactive=False), 0)
+        self.assertEqual(run.call_args.args[0][4], '-t')
+
+        with mock.patch.object(setup.subprocess, 'run', side_effect=KeyboardInterrupt):
+            self.assertEqual(setup.run_foreground_server('/adb', 'serial', 'direct', interactive=True), 130)
 
     def test_existing_server_requires_a_real_version(self):
         with mock.patch.object(setup, 'run_root', return_value=Completed(stdout='17.18.0\n')):
@@ -451,10 +712,10 @@ class HostSafetyTests(unittest.TestCase):
                 mock.patch.object(setup, 'list_adb_devices', return_value=[device]), \
                 mock.patch.object(setup, 'validate_target', side_effect=setup.SetupError('ABI mismatch')), \
                 mock.patch.object(setup, 'probe_root') as root, \
-                mock.patch.object(setup, 'release_for') as release:
+                mock.patch.object(setup, 'select_server_artifact') as select:
             self.assertEqual(setup.main(['--no-shell']), 1)
         root.assert_not_called()
-        release.assert_not_called()
+        select.assert_not_called()
 
     def test_root_denial_after_read_only_preflight_does_not_download_or_install(self):
         device = setup.AndroidDevice('serial', 'device', '')
@@ -462,12 +723,10 @@ class HostSafetyTests(unittest.TestCase):
                 mock.patch.object(setup, 'list_adb_devices', return_value=[device]), \
                 mock.patch.object(setup, 'validate_target', return_value=(34, 'x86_64', 'x86_64')), \
                 mock.patch.object(setup, 'probe_root', side_effect=setup.SetupError('root required')), \
-                mock.patch.object(setup, 'release_for') as release, \
-                mock.patch.object(setup, 'download_asset') as download, \
+                mock.patch.object(setup, 'select_server_artifact') as select, \
                 mock.patch.object(setup, 'install_server') as install:
             self.assertEqual(setup.main(['--no-shell']), 1)
-        release.assert_not_called()
-        download.assert_not_called()
+        select.assert_not_called()
         install.assert_not_called()
 
     def test_bad_version_fails_before_any_adb_operation(self):
@@ -478,19 +737,14 @@ class HostSafetyTests(unittest.TestCase):
         resolve.assert_not_called()
 
     def test_main_combines_device_arch_version_and_cleans_before_shell(self):
-        release = setup.Release(
-            '16.3.3', '16.3.3', 'frida-server-16.3.3-android-arm64.xz',
-            'https://github.com/frida/frida/releases/download/16.3.3/frida-server-16.3.3-android-arm64.xz',
-            1, None,
+        artifact = setup.CachedArtifact(
+            '16.3.3', 'arm64', 'frida-server-16.3.3-android-arm64.xz', Path('cached.xz'),
         )
         device = setup.AndroidDevice('phone', 'device', '')
         with tempfile.TemporaryDirectory() as temporary:
-            tmp_root = Path(temporary) / 'tmp'
+            tmp_root = Path(temporary) / '.tmp'
 
-            def unpack(_archive, destination):
-                destination.write_bytes(elf('arm64'))
-
-            def shell_after_cleanup(*_args):
+            def shell_after_cleanup(*_args, **_kwargs):
                 self.assertEqual(list(tmp_root.glob('frida-*')), [])
                 return 0
 
@@ -499,23 +753,20 @@ class HostSafetyTests(unittest.TestCase):
                     mock.patch.object(setup, 'list_adb_devices', return_value=[device]), \
                     mock.patch.object(setup, 'validate_target', return_value=(35, 'arm64-v8a', 'arm64')) as target, \
                     mock.patch.object(setup, 'probe_root', return_value='su-c') as root, \
-                    mock.patch.object(setup, 'release_for', return_value=release) as lookup, \
+                    mock.patch.object(setup, 'select_server_artifact', return_value=artifact) as select, \
                     mock.patch.object(setup, 'warn_frida_version'), \
-                    mock.patch.object(setup, 'download_asset'), \
-                    mock.patch.object(setup, 'unpack_xz', side_effect=unpack), \
                     mock.patch.object(setup, 'install_server') as install, \
-                    mock.patch.object(setup, 'launch_server', return_value=['915']) as launch, \
-                    mock.patch.object(setup, 'open_device_shell', side_effect=shell_after_cleanup) as shell, \
+                    mock.patch.object(setup, 'run_foreground_server', side_effect=shell_after_cleanup) as foreground, \
                     mock.patch.object(setup.sys, 'stdin', TtyBuffer()), \
                     mock.patch.object(setup.sys, 'stdout', TtyBuffer()):
                 self.assertEqual(setup.main(['--ver', '16.3.3', '--arch', 'arm64', '--device-id', 'phone']), 0)
         target.assert_called_once_with('/adb', 'phone', 'arm64')
         root.assert_called_once_with('/adb', 'phone')
-        lookup.assert_called_once_with('16.3.3', 'arm64')
+        select.assert_called_once()
+        self.assertEqual(select.call_args.args[:2], ('16.3.3', 'arm64'))
         install.assert_called_once()
         self.assertEqual(install.call_args.args[1:3], ('phone', 'su-c'))
-        launch.assert_called_once_with('/adb', 'phone', 'su-c')
-        shell.assert_called_once_with('/adb', 'phone', 'su-c')
+        foreground.assert_called_once_with('/adb', 'phone', 'su-c', interactive=True)
 
     def test_main_default_arch_uses_detected_architecture_for_release(self):
         device = setup.AndroidDevice('emulator-5554', 'device', '')
@@ -523,35 +774,31 @@ class HostSafetyTests(unittest.TestCase):
                 mock.patch.object(setup, 'list_adb_devices', return_value=[device]), \
                 mock.patch.object(setup, 'validate_target', return_value=(34, 'x86', 'x86')) as target, \
                 mock.patch.object(setup, 'probe_root', return_value='direct'), \
-                mock.patch.object(setup, 'release_for', side_effect=setup.SetupError('stop after architecture')) as release:
+                mock.patch.object(setup, 'select_server_artifact', side_effect=setup.SetupError('stop after architecture')) as select:
             self.assertEqual(setup.main(['--no-shell']), 1)
         target.assert_called_once_with('/adb', 'emulator-5554', 'auto')
-        release.assert_called_once_with(None, 'x86')
+        select.assert_called_once()
+        self.assertEqual(select.call_args.args[:2], (None, 'x86'))
 
     def test_no_shell_installs_and_starts_without_opening_a_shell(self):
-        release = setup.Release('17.18.0', '17.18.0', 'server.xz', 'https://example.invalid/server.xz', 1, None)
+        artifact = setup.CachedArtifact('17.18.0', 'x86_64', 'server.xz', Path('cached.xz'))
         device = setup.AndroidDevice('emulator-5554', 'device', '')
         with tempfile.TemporaryDirectory() as temporary:
-            tmp_root = Path(temporary) / 'tmp'
-
-            def unpack(_archive, destination):
-                destination.write_bytes(elf())
+            tmp_root = Path(temporary) / '.tmp'
 
             with mock.patch.object(setup, 'TMP_ROOT', tmp_root), \
                     mock.patch.object(setup, 'resolve_adb', return_value='/adb'), \
                     mock.patch.object(setup, 'list_adb_devices', return_value=[device]), \
                     mock.patch.object(setup, 'validate_target', return_value=(34, 'x86_64', 'x86_64')), \
                     mock.patch.object(setup, 'probe_root', return_value='direct'), \
-                    mock.patch.object(setup, 'release_for', return_value=release), \
+                    mock.patch.object(setup, 'select_server_artifact', return_value=artifact), \
                     mock.patch.object(setup, 'warn_frida_version'), \
-                    mock.patch.object(setup, 'download_asset'), \
-                    mock.patch.object(setup, 'unpack_xz', side_effect=unpack), \
                     mock.patch.object(setup, 'install_server') as install, \
-                    mock.patch.object(setup, 'launch_server', return_value=['77']) as launch, \
+                    mock.patch.object(setup, 'run_foreground_server', return_value=7) as foreground, \
                     mock.patch.object(setup, 'open_device_shell') as shell:
-                self.assertEqual(setup.main(['--no-shell']), 0)
+                self.assertEqual(setup.main(['--no-shell']), 7)
         install.assert_called_once()
-        launch.assert_called_once_with('/adb', 'emulator-5554', 'direct')
+        foreground.assert_called_once_with('/adb', 'emulator-5554', 'direct', interactive=False)
         shell.assert_not_called()
 
 
@@ -562,7 +809,7 @@ class HostSafetyTests(unittest.TestCase):
 # tool's exact managed path before handing the operator a root shell.
 # ---------------------------------------------------------------------------
 class ShellOnlyTests(unittest.TestCase):
-    def test_shell_mode_uses_selected_device_and_reuses_running_server(self):
+    def test_shell_mode_stops_existing_server_and_restarts_it_foreground(self):
         devices = [
             setup.AndroidDevice('emulator-5554', 'device', ''),
             setup.AndroidDevice('phone', 'device', ''),
@@ -570,8 +817,9 @@ class ShellOnlyTests(unittest.TestCase):
         with mock.patch.object(setup, 'resolve_adb', return_value='/adb'), \
                 mock.patch.object(setup, 'list_adb_devices', return_value=devices), \
                 mock.patch.object(setup, 'probe_root', return_value='su-c') as root, \
-                mock.patch.object(setup, 'use_existing_server', return_value=('reused', ['77'])) as existing, \
-                mock.patch.object(setup, 'open_device_shell', return_value=9) as shell, \
+                mock.patch.object(setup, 'prepare_existing_server', return_value='ready') as prepare, \
+                mock.patch.object(setup, 'validate_existing_server', return_value='17.18.0'), \
+                mock.patch.object(setup, 'run_foreground_server', return_value=9) as foreground, \
                 mock.patch.object(setup, 'validate_target') as target, \
                 mock.patch.object(setup, 'release_for') as release, \
                 mock.patch.object(setup, 'download_asset') as download, \
@@ -581,8 +829,8 @@ class ShellOnlyTests(unittest.TestCase):
                 mock.patch.object(setup.sys, 'stdout', TtyBuffer()):
             self.assertEqual(setup.main(['--shell', '--device-id', 'phone']), 9)
         root.assert_called_once_with('/adb', 'phone')
-        existing.assert_called_once_with('/adb', 'phone', 'su-c')
-        shell.assert_called_once_with('/adb', 'phone', 'su-c')
+        prepare.assert_called_once_with('/adb', 'phone', 'su-c')
+        foreground.assert_called_once_with('/adb', 'phone', 'su-c', interactive=True)
         target.assert_not_called()
         release.assert_not_called()
         download.assert_not_called()
@@ -594,25 +842,25 @@ class ShellOnlyTests(unittest.TestCase):
         with mock.patch.object(setup, 'resolve_adb', return_value='/adb'), \
                 mock.patch.object(setup, 'list_adb_devices', return_value=[device]), \
                 mock.patch.object(setup, 'probe_root', return_value='direct'), \
-                mock.patch.object(setup, 'use_existing_server', return_value=('missing', None)) as existing, \
+                mock.patch.object(setup, 'prepare_existing_server', return_value='missing') as prepare, \
                 mock.patch.object(setup, 'open_device_shell', return_value=0) as shell, \
                 mock.patch.object(setup.sys, 'stdin', TtyBuffer()), \
                 mock.patch.object(setup.sys, 'stdout', TtyBuffer()):
             self.assertEqual(setup.main(['--shell']), 0)
-        existing.assert_called_once_with('/adb', 'phone', 'direct')
+        prepare.assert_called_once_with('/adb', 'phone', 'direct')
         shell.assert_called_once_with('/adb', 'phone', 'direct')
 
-    def test_shell_mode_starts_existing_server_then_opens_root_shell(self):
+    def test_shell_mode_orphan_server_opens_root_shell_without_stopping_it(self):
         device = setup.AndroidDevice('emulator-5554', 'device', '')
         with mock.patch.object(setup, 'resolve_adb', return_value='/adb'), \
                 mock.patch.object(setup, 'list_adb_devices', return_value=[device]), \
                 mock.patch.object(setup, 'probe_root', return_value='direct'), \
-                mock.patch.object(setup, 'use_existing_server', return_value=('started', ['88'])) as existing, \
+                mock.patch.object(setup, 'prepare_existing_server', return_value='orphan') as prepare, \
                 mock.patch.object(setup, 'open_device_shell', return_value=0) as shell, \
                 mock.patch.object(setup.sys, 'stdin', TtyBuffer()), \
                 mock.patch.object(setup.sys, 'stdout', TtyBuffer()):
             self.assertEqual(setup.main(['--shell']), 0)
-        existing.assert_called_once_with('/adb', 'emulator-5554', 'direct')
+        prepare.assert_called_once_with('/adb', 'emulator-5554', 'direct')
         shell.assert_called_once_with('/adb', 'emulator-5554', 'direct')
 
     def test_shell_mode_root_denial_has_no_server_or_install_side_effects(self):
@@ -620,7 +868,7 @@ class ShellOnlyTests(unittest.TestCase):
         with mock.patch.object(setup, 'resolve_adb', return_value='/adb'), \
                 mock.patch.object(setup, 'list_adb_devices', return_value=[device]), \
                 mock.patch.object(setup, 'probe_root', side_effect=setup.SetupError('root guidance')) as root, \
-                mock.patch.object(setup, 'use_existing_server') as existing, \
+                mock.patch.object(setup, 'prepare_existing_server') as prepare, \
                 mock.patch.object(setup, 'open_device_shell') as shell, \
                 mock.patch.object(setup, 'validate_target') as target, \
                 mock.patch.object(setup, 'release_for') as release, \
@@ -629,7 +877,7 @@ class ShellOnlyTests(unittest.TestCase):
                 mock.patch.object(setup.sys, 'stdout', TtyBuffer()):
             self.assertEqual(setup.main(['--shell']), 1)
         root.assert_called_once_with('/adb', 'phone')
-        existing.assert_not_called()
+        prepare.assert_not_called()
         shell.assert_not_called()
         target.assert_not_called()
         release.assert_not_called()

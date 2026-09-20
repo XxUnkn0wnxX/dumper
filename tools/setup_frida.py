@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Install and start Frida server on a rooted Android device.
+"""Install and run Frida server in the foreground on a rooted Android device.
 
-Normal setup selects one online target, validates its ABI and root access,
-replaces /data/local/tmp/frida-server, and starts it in the background. Use
---shell to start or reuse an existing installation, or just open the directory
-if no server is installed. Both modes open a root shell; --no-shell makes
-normal setup return to the host terminal after starting the server.
+Normal setup validates the selected Android ABI, obtains a verified Frida
+archive from the local cache or official GitHub release, then replaces
+/data/local/tmp/frida-server and runs it attached to this terminal. ``--shell``
+reuses an existing installation; ``--no-shell`` has no follow-up root prompt.
 """
 
 import argparse
@@ -33,13 +32,14 @@ import uuid
 
 
 # ------------------------------------------------------------------------------
-# REPOSITORY AND RELEASE CONSTANTS
-# Downloads are always staged below the ignored tmp/ directory.  A temporary
-# directory removes both the .xz archive and extracted executable after every
-# success or failure, keeping release artefacts out of the working tree.
+# REPOSITORY, CACHE, AND RELEASE CONSTANTS
+# Extracted executables always live in an ignored temporary directory. Cache
+# entries retain only validated official .xz archives plus integrity manifests;
+# a temporary cache staging directory prevents partial downloads becoming hits.
 # ------------------------------------------------------------------------------
 ROOT = Path(__file__).resolve().parents[1]
-TMP_ROOT = ROOT / 'tmp'
+TMP_ROOT = ROOT / '.tmp'
+CACHE_ROOT = Path(__file__).resolve().parent / '.cache' / 'frida'
 GITHUB_API = 'https://api.github.com/repos/frida/frida/releases'
 REMOTE_DIRECTORY = '/data/local/tmp'
 REMOTE_SERVER = f'{REMOTE_DIRECTORY}/frida-server'
@@ -62,6 +62,10 @@ class SetupError(RuntimeError):
     """A preflight, release, download, or deployment operation failed."""
 
 
+class CacheError(SetupError):
+    """A local Frida archive or its integrity manifest cannot be used."""
+
+
 @dataclass(frozen=True)
 class AndroidDevice:
     """A row reported by ``adb devices -l``."""
@@ -81,6 +85,16 @@ class Release:
     url: str
     size: int
     sha256: str | None
+
+
+@dataclass(frozen=True)
+class CachedArtifact:
+    """A locally verified Frida archive ready for temporary extraction."""
+
+    version: str
+    architecture: str
+    asset_name: str
+    archive: Path
 
 
 # ------------------------------------------------------------------------------
@@ -324,7 +338,7 @@ def fetch_json(url: str) -> dict:
         if error.code == 403 and error.headers.get('X-RateLimit-Remaining') == '0':
             raise SetupError('GitHub API rate limit reached; retry later after the limit resets.') from error
         raise SetupError(f'GitHub release lookup failed with HTTP {error.code}: {error.reason}') from error
-    except (URLError, TimeoutError, json.JSONDecodeError, IncompleteRead, UnicodeDecodeError) as error:
+    except (URLError, TimeoutError, OSError, json.JSONDecodeError, IncompleteRead, UnicodeDecodeError) as error:
         raise SetupError(f'GitHub release lookup failed: {error}') from error
 
 
@@ -439,6 +453,220 @@ def validate_elf(server: Path, architecture: str) -> None:
 
 
 # ------------------------------------------------------------------------------
+# VALIDATED ARCHIVE CACHE
+# Final cache files are official, versioned XZ archives only.  Their companion
+# manifests record a locally calculated SHA-256 after download_asset has already
+# checked GitHub's size and optional digest.  Every cache use rechecks that hash,
+# then extracts and validates the ELF into an ignored temporary work directory.
+# ------------------------------------------------------------------------------
+def cache_manifest_path(asset_name: str) -> Path:
+    """Return the companion manifest path without accepting nested filenames."""
+    if Path(asset_name).name != asset_name:
+        raise CacheError(f'Invalid Frida cache asset name: {asset_name!r}.')
+    return CACHE_ROOT / f'{asset_name}.json'
+
+
+def file_sha256(path: Path) -> str:
+    """Hash a local archive in bounded chunks without loading it into memory."""
+    digest = hashlib.sha256()
+    try:
+        with path.open('rb') as source:
+            while True:
+                block = source.read(1024 * 1024)
+                if not block:
+                    break
+                digest.update(block)
+    except OSError as error:
+        raise CacheError(f'Could not read cached Frida archive {path.name}: {error}') from error
+    return digest.hexdigest()
+
+
+def cache_version_key(version: str) -> tuple[int, int, int]:
+    """Sort stable X.Y.Z cache entries numerically rather than lexically."""
+    return tuple(int(part) for part in normalize_version(version).split('.'))
+
+
+def load_cached_artifact(asset_name: str, architecture: str,
+                         release: Release | None = None) -> CachedArtifact:
+    """Verify a cached archive, optionally against freshly fetched release metadata."""
+    manifest_path = cache_manifest_path(asset_name)
+    archive = CACHE_ROOT / asset_name
+    try:
+        document = json.loads(manifest_path.read_text(encoding='utf-8'))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise CacheError(f'Cached Frida manifest for {asset_name} is unavailable or invalid: {error}') from error
+    try:
+        version = normalize_version(document['version'])
+        manifest_architecture = document['architecture']
+        manifest_asset = document['asset_name']
+        expected_size = document['archive_size']
+        expected_hash = document['archive_sha256']
+        upstream_hash = document.get('upstream_sha256')
+    except (KeyError, TypeError, SetupError) as error:
+        raise CacheError(f'Cached Frida manifest for {asset_name} is incomplete.') from error
+    expected_asset = f'frida-server-{version}-android-{architecture}.xz'
+    if (manifest_architecture != architecture or manifest_asset != asset_name
+            or asset_name != expected_asset or not isinstance(expected_size, int)
+            or expected_size <= 0 or expected_size > DOWNLOAD_LIMIT
+            or not isinstance(expected_hash, str)
+            or not re.fullmatch(r'[0-9a-f]{64}', expected_hash)
+            or (upstream_hash is not None and (
+                not isinstance(upstream_hash, str) or not re.fullmatch(r'[0-9a-f]{64}', upstream_hash)
+                or upstream_hash != expected_hash
+            ))):
+        raise CacheError(f'Cached Frida manifest for {asset_name} does not match its filename or architecture.')
+    if release is not None and (
+            release.asset_name != asset_name or release.version != version or release.size != expected_size
+            or (release.sha256 is not None and expected_hash != release.sha256)):
+        raise CacheError(f'Cached Frida archive {asset_name} does not match current GitHub release metadata.')
+    try:
+        actual_size = archive.stat().st_size
+    except OSError as error:
+        raise CacheError(f'Cached Frida archive {asset_name} is missing: {error}') from error
+    if actual_size != expected_size:
+        raise CacheError(
+            f'Cached Frida archive {asset_name} has size {actual_size}, expected {expected_size}.',
+        )
+    if file_sha256(archive) != expected_hash:
+        raise CacheError(f'Cached Frida archive {asset_name} failed its local SHA-256 check.')
+    return CachedArtifact(version, architecture, asset_name, archive)
+
+
+def materialize_cached_artifact(artifact: CachedArtifact, destination: Path) -> None:
+    """Extract and verify a cache entry for this run without retaining a binary."""
+    try:
+        unpack_xz(artifact.archive, destination)
+        validate_elf(destination, artifact.architecture)
+    except SetupError as error:
+        raise CacheError(f'Cached Frida archive {artifact.asset_name} cannot be extracted safely: {error}') from error
+
+
+def cached_artifacts(architecture: str) -> list[CachedArtifact]:
+    """Return metadata/hash-valid cache entries for an architecture, newest first."""
+    if not CACHE_ROOT.is_dir():
+        return []
+    entries = []
+    pattern = f'frida-server-*-android-{architecture}.xz.json'
+    for manifest in CACHE_ROOT.glob(pattern):
+        asset_name = manifest.name[:-5]
+        try:
+            entries.append(load_cached_artifact(asset_name, architecture))
+        except CacheError:
+            # A corrupt cache item is never selected. A later cache refresh can
+            # replace it atomically; deleting it is unnecessary and riskier.
+            continue
+    return sorted(entries, key=lambda entry: cache_version_key(entry.version), reverse=True)
+
+
+def materialize_highest_cached(architecture: str, destination: Path,
+                               *, excluded_assets: frozenset[str] = frozenset()) -> CachedArtifact:
+    """Find the newest cache item that also survives XZ/ELF and metadata exclusions."""
+    for artifact in cached_artifacts(architecture):
+        if artifact.asset_name in excluded_assets:
+            continue
+        try:
+            materialize_cached_artifact(artifact, destination)
+            return artifact
+        except CacheError:
+            continue
+    raise CacheError(f'No valid cached Frida archive exists for Android {architecture}.')
+
+
+def cache_release(release: Release, architecture: str) -> CachedArtifact:
+    """Download, validate, and atomically publish one official archive to cache."""
+    CACHE_ROOT.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='download-', dir=CACHE_ROOT) as temporary:
+        staging = Path(temporary)
+        archive = staging / release.asset_name
+        extracted = staging / 'frida-server'
+        download_asset(release, archive)
+        unpack_xz(archive, extracted)
+        validate_elf(extracted, architecture)
+        archive_hash = file_sha256(archive)
+        manifest = {
+            'version': release.version,
+            'architecture': architecture,
+            'asset_name': release.asset_name,
+            'archive_size': archive.stat().st_size,
+            'archive_sha256': archive_hash,
+            'upstream_sha256': release.sha256,
+        }
+        manifest_staging = staging / f'{release.asset_name}.json'
+        manifest_staging.write_text(json.dumps(manifest, sort_keys=True) + '\n', encoding='utf-8')
+        # Same-filesystem replacements publish only fully checked files. A
+        # crash between the two replacements yields an invalid cache entry,
+        # which load_cached_artifact refuses rather than trusting partially.
+        archive.replace(CACHE_ROOT / release.asset_name)
+        manifest_staging.replace(cache_manifest_path(release.asset_name))
+    return load_cached_artifact(release.asset_name, architecture)
+
+
+def select_server_artifact(version: str | None, architecture: str, destination: Path) -> CachedArtifact:
+    """Materialize pinned or latest Frida with defined cache/network fallback rules."""
+    if version:
+        asset_name = f'frida-server-{version}-android-{architecture}.xz'
+        try:
+            cached = load_cached_artifact(asset_name, architecture)
+            materialize_cached_artifact(cached, destination)
+            print(f'Using cached Frida {cached.version} for Android {architecture}.', flush=True)
+            return cached
+        except CacheError:
+            # A pinned corrupt/missing cache may refresh exactly once, but may
+            # never silently downgrade to a different requested version.
+            release = release_for(version, architecture)
+            print(f'Downloading Frida {release.version} for Android {architecture}.', flush=True)
+            cached = cache_release(release, architecture)
+            materialize_cached_artifact(cached, destination)
+            return cached
+
+    print('Checking latest stable Frida release...', flush=True)
+    try:
+        latest = release_for(None, architecture)
+    except SetupError as metadata_error:
+        try:
+            cached = materialize_highest_cached(architecture, destination)
+        except CacheError as cache_error:
+            raise SetupError(
+                f'Could not check the latest Frida release ({metadata_error}); {cache_error}'
+            ) from metadata_error
+        print(
+            f'Warning: latest Frida metadata is unavailable ({metadata_error}); '
+            f'using cached {cached.version} for Android {architecture}.',
+            file=sys.stderr,
+        )
+        return cached
+
+    try:
+        cached = load_cached_artifact(latest.asset_name, architecture, latest)
+        materialize_cached_artifact(cached, destination)
+        print(f'Using cached Frida {cached.version} for Android {architecture}.', flush=True)
+        return cached
+    except CacheError:
+        try:
+            print(f'Downloading Frida {latest.version} for Android {architecture}.', flush=True)
+            cached = cache_release(latest, architecture)
+            materialize_cached_artifact(cached, destination)
+            return cached
+        except SetupError as download_error:
+            try:
+                # Fresh latest metadata rejected this same-name cache archive;
+                # a failed refresh must not immediately reuse it as fallback.
+                cached = materialize_highest_cached(
+                    architecture, destination, excluded_assets=frozenset({latest.asset_name}),
+                )
+            except CacheError as cache_error:
+                raise SetupError(
+                    f'Could not download Frida {latest.version} ({download_error}); {cache_error}'
+                ) from download_error
+            print(
+                f'Warning: Frida {latest.version} could not be downloaded ({download_error}); '
+                f'using cached {cached.version} for Android {architecture}.',
+                file=sys.stderr,
+            )
+            return cached
+
+
+# ------------------------------------------------------------------------------
 # ANDROID INSTALLATION AND OPTIONAL OPERATOR SHELL
 # The unique staging name means a failed upload cannot damage a previous working
 # /data/local/tmp/frida-server.  Only a verified staging binary is moved into
@@ -550,39 +778,17 @@ def validate_existing_server(adb: str, serial: str, root_mode: str) -> str:
         raise SetupError(f'Existing managed Frida server returned an invalid version: {version!r}.') from error
 
 
-def launch_server(adb: str, serial: str, root_mode: str) -> list[str]:
-    """Start the server and require a current-path process with no stale deleted peer."""
-    preexisting = managed_server_pids(adb, serial, root_mode)
-    if preexisting:
-        raise SetupError(
-            'A managed Frida server process appeared before launch '
-            f'(PID(s): {", ".join(preexisting)}); refuse to start a duplicate daemon.'
-        )
-    run_root(
-        adb, serial, root_mode, remote_quote(REMOTE_SERVER, '--daemonize'),
-        'Starting managed Frida server',
-    )
-    all_pids = managed_server_pids(adb, serial, root_mode)
-    current_pids = managed_server_pids(adb, serial, root_mode, include_deleted=False)
-    if not current_pids:
-        raise SetupError('Frida server --daemonize returned successfully but no managed server process is running.')
-    if set(all_pids) != set(current_pids):
-        raise SetupError(
-            'Frida server started, but a stale managed deleted executable is still running; '
-            'refuse to report an updated daemon.'
-        )
-    return current_pids
+def prepare_existing_server(adb: str, serial: str, root_mode: str) -> str:
+    """Prepare ``--shell`` to run an existing binary in the foreground.
 
-
-def use_existing_server(adb: str, serial: str, root_mode: str) -> tuple[str, list[str] | None]:
-    """Reuse a running server or start one existing valid server for ``--shell``."""
+    A missing binary with a still-running deleted executable is left alone: it
+    cannot be safely reattached or relaunched.  The caller opens a root shell
+    and reports that orphan state instead of signalling an unreplaceable file.
+    """
     pids = managed_server_pids(adb, serial, root_mode)
-    if pids:
-        return 'reused', pids
-
     state = existing_server_state(adb, serial, root_mode)
     if state == 'missing':
-        return 'missing', None
+        return 'orphan' if pids else 'missing'
     if state == 'symlink':
         raise SetupError(f'{REMOTE_SERVER} is a symlink; refuse to execute it.')
     if state == 'directory':
@@ -592,7 +798,49 @@ def use_existing_server(adb: str, serial: str, root_mode: str) -> tuple[str, lis
     if state == 'special':
         raise SetupError(f'{REMOTE_SERVER} is not a regular executable file; refuse to execute it.')
     validate_existing_server(adb, serial, root_mode)
-    return 'started', launch_server(adb, serial, root_mode)
+    # A foreground terminal cannot attach to an old daemon. Stop only process
+    # paths proven to be this managed server, then recheck before terminal use.
+    stop_managed_servers(adb, serial, root_mode)
+    remaining = managed_server_pids(adb, serial, root_mode)
+    if remaining:
+        raise SetupError(
+            'Managed Frida server remained after SIGTERM '
+            f'(PID(s): {", ".join(remaining)}); cannot start a foreground server.'
+        )
+    return 'ready'
+
+
+def foreground_server_command(interactive: bool) -> str:
+    """Build the remote foreground lifecycle after one final process-free scan."""
+    preflight = managed_server_absent_command()
+    directory = shlex.quote(REMOTE_DIRECTORY)
+    server = './frida-server'
+    if not interactive:
+        return f'{preflight}; cd {directory} || exit $?; exec {server}'
+    # The INT trap lets the foreground server receive Ctrl-C while preserving
+    # this root shell long enough to offer its prompt after exit status 0/130.
+    return (
+        f'{preflight}; cd {directory} || exit $?; '
+        "trap ':' INT; "
+        f'{server}; frida_status=$?; trap - INT; '
+        'if test "$frida_status" -eq 0 || test "$frida_status" -eq 130; then exec /system/bin/sh -i; fi; '
+        'exit "$frida_status"'
+    )
+
+
+def run_foreground_server(adb: str, serial: str, root_mode: str, *, interactive: bool) -> int:
+    """Run Frida server attached to this terminal without a subprocess timeout."""
+    shell_arguments = root_command(root_mode, foreground_server_command(interactive))
+    terminal_mode = '-t' if interactive or (sys.stdin.isatty() and sys.stdout.isatty()) else '-T'
+    argv = [adb, '-s', serial, shell_arguments[0], terminal_mode, shell_arguments[1]]
+    try:
+        # Do not capture or time-limit the session: frida-server deliberately
+        # owns this terminal until it exits or Ctrl-C stops it.
+        return subprocess.run(argv, check=False).returncode
+    except KeyboardInterrupt:
+        return 130
+    except OSError as error:
+        raise SetupError(f'Running foreground Frida server failed: {error}') from error
 
 
 def install_server(adb: str, serial: str, root_mode: str, server: Path,
@@ -701,8 +949,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument('--device-id', '-s', help='ADB serial when more than one Android device is online.')
     parser.add_argument('--adb', help='ADB executable name or absolute/relative path.')
     shell_mode = parser.add_mutually_exclusive_group()
-    shell_mode.add_argument('--no-shell', action='store_true', help='Install and start Frida server without opening an interactive shell.')
-    shell_mode.add_argument('--shell', action='store_true', help='Reuse or start the existing managed server, then open an interactive root shell.')
+    shell_mode.add_argument('--no-shell', action='store_true', help='Install and run Frida server in the foreground until it exits.')
+    shell_mode.add_argument('--shell', action='store_true', help='Run the installed Frida server in the foreground, then open a root shell.')
     return parser
 
 
@@ -726,11 +974,21 @@ def main(argv: list[str] | None = None) -> int:
             # Shell-only may start a server, so it requires root. It skips the
             # normal install target checks because it does not download/update.
             root_mode = probe_root(adb, device.serial)
-            action, pids = use_existing_server(adb, device.serial, root_mode)
-            if action == 'reused':
-                print(f'Reusing managed Frida server on {device.serial} (PID(s): {", ".join(pids or [])}).', flush=True)
-            elif action == 'started':
-                print(f'Started existing managed Frida server on {device.serial} (PID(s): {", ".join(pids or [])}).', flush=True)
+            action = prepare_existing_server(adb, device.serial, root_mode)
+            if action == 'ready':
+                installed_version = validate_existing_server(adb, device.serial, root_mode)
+                print(
+                    f'Installed Frida server {installed_version} on {device.serial}; '
+                    'starting it in the foreground.',
+                    flush=True,
+                )
+                return run_foreground_server(adb, device.serial, root_mode, interactive=True)
+            if action == 'orphan':
+                print(
+                    f'A managed Frida server is still running on {device.serial}, but {REMOTE_SERVER} is missing; '
+                    'opening a root shell without stopping or relaunching it.',
+                    flush=True,
+                )
             else:
                 print(f'No managed Frida server is installed on {device.serial}; opening a root shell only.', flush=True)
             return open_device_shell(adb, device.serial, root_mode)
@@ -740,28 +998,25 @@ def main(argv: list[str] | None = None) -> int:
         root_mode = probe_root(adb, device.serial)
         print(f'Using {device.serial}: Android SDK {sdk}, ABI {abi}, arch {architecture}, root via {root_mode}.', flush=True)
 
-        release = release_for(args.ver, architecture)
-        warn_frida_version(release.version)
-        print(f'Downloading Frida {release.version} ({release.asset_name}).', flush=True)
         TMP_ROOT.mkdir(exist_ok=True)
         with tempfile.TemporaryDirectory(prefix='frida-', dir=TMP_ROOT) as temporary:
             staging = Path(temporary)
-            archive = staging / release.asset_name
             server = staging / 'frida-server'
-            download_asset(release, archive)
-            unpack_xz(archive, server)
-            validate_elf(server, architecture)
-            install_server(adb, device.serial, root_mode, server, release.version)
+            artifact = select_server_artifact(args.ver, architecture, server)
+            warn_frida_version(artifact.version)
+            print(
+                f'Selected Frida {artifact.version} ({artifact.asset_name}) for Android {architecture}.',
+                flush=True,
+            )
+            print(f'Deploying Frida {artifact.version} to {device.serial}.', flush=True)
+            install_server(adb, device.serial, root_mode, server, artifact.version)
 
-        pids = launch_server(adb, device.serial, root_mode)
         print(
-            f'Installed and started Frida server {release.version} at {REMOTE_SERVER} on '
-            f'{device.serial} (PID(s): {", ".join(pids)}).',
+            f'Installed Frida server {artifact.version} at {REMOTE_SERVER} on {device.serial}; '
+            'starting it in the foreground.',
             flush=True,
         )
-        if args.no_shell:
-            return 0
-        return open_device_shell(adb, device.serial, root_mode)
+        return run_foreground_server(adb, device.serial, root_mode, interactive=not args.no_shell)
     except SetupError as error:
         print(f'error: {error}', file=sys.stderr)
         return 1

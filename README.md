@@ -86,8 +86,9 @@ Run these commands from the repository root with the virtual environment active.
    prompt.
 2. Prepare and start Frida server using the
    [Frida setup guide](tools/README.md#frida-server-setup). The helper installs and
-   starts the server automatically, then opens a root shell. Frida keeps running
-   after you exit that shell. Use `--shell` to reuse an existing installation.
+   starts the server automatically in the foreground of a root terminal session.
+   Keep that terminal open while capturing. Use `--shell` to start an existing
+   installation without downloading it again.
 3. In another host terminal, activate the environment and start the dumper:
 
    ```sh
@@ -227,7 +228,7 @@ The runtime signature table and maintainer comments live in
 | Automatic layout detection | User-confirmed live success on Android 9 / API 28 with plain `python dump_keys.py` (2026-09-20): Android selection, `libwvhidl.so` detection, automatic `args[4]` layout, and key retrieval. Offline checks also cover 12 library fixtures from eight Android 9–13 SDK packages, including Android 12L. | Live automatic capture on other Android versions and library builds. |
 | Protobuf | Schema and serialization regressions using synthetic requests from the original Protobuf 3.19.3 binding; the updated dumper was reported working on Android 9. | Further device coverage and validation after future compiler/runtime updates. |
 | Capture folders | Synthetic output tests for CDM/API labels, timestamp collisions, and preservation of existing pairs. | Live capture using the new folder layout. |
-| Frida setup helper | User-confirmed Android 9 setup with the earlier manual-start workflow (2026-09-20), mocked lifecycle tests, and an official release download with checksum, extraction, architecture, and cleanup checks. | The new automatic startup/replacement flow, reuse through `--shell`, and root-manager behavior on other devices. |
+| Frida setup helper | User-confirmed Android 9 setup with the earlier manual-start workflow (2026-09-20), mocked lifecycle/cache tests, local terminal checks for Ctrl+C and foreground lifetime, and an official release download with checksum, extraction, cache reuse, and cleanup checks. | Live verification of the corrected foreground startup/replacement flow, launch through `--shell`, and root-manager behavior on other devices. |
 
 **Android 14 and later are outside this fork's current verified scope.** An SDK
 fixture proves how that sample's signature is classified; it does not establish
