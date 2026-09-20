@@ -1040,7 +1040,7 @@ def main(argv: list[str] | None = None) -> int:
             if action == 'ready':
                 installed_version = validate_existing_server(adb, device.serial, root_mode)
                 print(
-                    f'Installed Frida server {installed_version} on {device.serial}; '
+                    f'Found existing Frida server {installed_version} on {device.serial}; '
                     'starting it in the foreground.',
                     flush=True,
                 )
