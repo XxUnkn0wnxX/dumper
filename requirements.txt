@@ -2,3 +2,7 @@ frida
 frida-tools
 protobuf==7.36.2
 pycryptodome
+# Bundled ADB fallback on supported hosts; adb on PATH always takes precedence.
+# Native ARM hosts use system Platform-Tools (no matching adbutils wheel).
+--only-binary=adbutils
+adbutils==2.12.0; platform_machine == "x86_64" or platform_machine == "AMD64" or platform_machine == "x86"

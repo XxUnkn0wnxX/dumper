@@ -1,4 +1,4 @@
-"""Check tracked README links, structure, navigation, and CLI tables."""
+"""Check tracked documentation links, structure, navigation, and CLI tables."""
 
 import ast
 from html.parser import HTMLParser
@@ -9,13 +9,19 @@ from urllib.parse import unquote, urlsplit
 
 
 ROOT = Path(__file__).resolve().parents[1]
+DOC_RELATIVE_PATHS = tuple(
+    sorted(path.relative_to(ROOT) for path in (ROOT / "docs").glob("*.md"))
+)
 README_RELATIVE_PATHS = (
     Path("README.md"),
     Path("Helpers/README.md"),
     Path("tools/README.md"),
     Path("archives/wks-keys/README.md"),
+    *DOC_RELATIVE_PATHS,
 )
+DOCUMENT_RELATIVE_PATHS = README_RELATIVE_PATHS + (Path("tests.md"),)
 README_PATHS = tuple(ROOT / relative_path for relative_path in README_RELATIVE_PATHS)
+DOCUMENT_PATHS = tuple(ROOT / relative_path for relative_path in DOCUMENT_RELATIVE_PATHS)
 MARKDOWN_LINK = re.compile(r"\[[^\]]*\]\((<[^>]+>|[^)\s]+)\)")
 MARKDOWN_HEADING = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$", re.MULTILINE)
 CLI_FLAG = re.compile(r"(?<![\w-])--?[a-z][a-z-]*")
@@ -94,7 +100,7 @@ class ReadmeDocumentationTests(unittest.TestCase):
     """Keep documentation links and examples aligned with shipped sources."""
 
     def test_readmes_have_valid_links_and_markdown_structure(self):
-        for path in README_PATHS:
+        for path in DOCUMENT_PATHS:
             relative_path = path.relative_to(ROOT)
             with self.subTest(readme=relative_path.as_posix()):
                 self.assertTrue(path.is_file(), f"missing tracked README: {relative_path}")
@@ -132,7 +138,7 @@ class ReadmeDocumentationTests(unittest.TestCase):
 
                 destination_anchors = {
                     other_path: markdown_anchors(other_path.read_text(encoding="utf-8"))
-                    for other_path in README_PATHS
+                    for other_path in DOCUMENT_PATHS
                     if other_path.is_file()
                 }
                 for match in MARKDOWN_LINK.finditer(text):
@@ -165,14 +171,19 @@ class ReadmeDocumentationTests(unittest.TestCase):
                             f"{relative_path} links to missing heading anchor {target}",
                         )
 
-    def test_main_readme_links_every_tracked_readme(self):
+    def test_main_readme_links_every_dedicated_guide(self):
         main = (ROOT / "README.md").read_text(encoding="utf-8")
-        for relative_path in README_RELATIVE_PATHS[1:]:
+        for relative_path in DOC_RELATIVE_PATHS:
             self.assertIn(
                 f"]({relative_path.as_posix()})",
                 main,
-                f"README.md has no direct link to {relative_path}",
+                f"README.md has no direct guide link to {relative_path}",
             )
+        self.assertIn(
+            "](archives/wks-keys/README.md)",
+            main,
+            "README.md has no direct link to the archive inventory",
+        )
         self.assertIn(
             "https://forum.videohelp.com/threads/408031-Dumping-Your-own-L3-CDM-with-Android-Studio",
             main,
@@ -181,9 +192,10 @@ class ReadmeDocumentationTests(unittest.TestCase):
 
     def test_cli_flags_are_documented_with_examples(self):
         cli_tables = (
-            (Path("dump_keys.py"), Path("README.md"), "Layout detection and options"),
-            (Path("tools/setup_frida.py"), Path("tools/README.md"), "Frida server setup"),
-            (Path("tools/regenerate_protobuf.py"), Path("tools/README.md"), "Protobuf regeneration"),
+            (Path("init.py"), Path("docs/setup.md"), "Automatic environment setup"),
+            (Path("dump_keys.py"), Path("docs/dumper.md"), "Layout detection and options"),
+            (Path("tools/setup_frida.py"), Path("docs/frida-setup.md"), "Frida server setup"),
+            (Path("tools/regenerate_protobuf.py"), Path("docs/protobuf.md"), "Protobuf regeneration"),
         )
         for script_relative_path, doc_relative_path, section in cli_tables:
             with self.subTest(script=script_relative_path.as_posix()):

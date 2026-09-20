@@ -500,7 +500,7 @@ class ArchiveCacheTests(unittest.TestCase):
                     mock.patch.object(setup, 'probe_root', return_value='direct'), \
                     mock.patch.object(setup, 'release_for', return_value=release), \
                     mock.patch.object(setup, 'download_asset', side_effect=download), \
-                    mock.patch.object(setup, 'warn_frida_version'), \
+                    mock.patch.object(setup, 'ensure_host_frida_version'), \
                     mock.patch.object(setup, 'install_server', side_effect=setup.SetupError('remote install failed')):
                 self.assertEqual(setup.main(['--no-shell']), 1)
             self.assertTrue((cache_root / release.asset_name).exists())
@@ -562,7 +562,8 @@ class InstallAndShellTests(unittest.TestCase):
                 with self.assertRaisesRegex(setup.SetupError, 'version failed'):
                     setup.install_server('/adb', 'serial', 'direct', server, '17.18.0', staging_name='/data/local/tmp/.frida-server-owned')
         cleanup = root.call_args_list[-1]
-        self.assertIn('rm /data/local/tmp/.frida-server-owned', cleanup.args[3])
+        self.assertEqual('rm -f /data/local/tmp/.frida-server-owned', cleanup.args[3])
+        self.assertEqual(cleanup.kwargs['timeout'], setup.STAGING_CLEANUP_TIMEOUT)
         self.assertNotIn(setup.REMOTE_SERVER, cleanup.args[3])
 
     def test_disconnect_before_upload_does_not_push_or_touch_remote_server(self):
@@ -628,9 +629,11 @@ class InstallAndShellTests(unittest.TestCase):
         with mock.patch.object(setup, 'managed_server_pids', side_effect=[['71'], []]), \
                 mock.patch.object(setup, 'existing_server_state', return_value='executable'), \
                 mock.patch.object(setup, 'validate_existing_server', return_value='17.18.0') as validate, \
+                mock.patch.object(setup, 'ensure_host_frida_version') as sync, \
                 mock.patch.object(setup, 'stop_managed_servers') as stop:
             self.assertEqual(setup.prepare_existing_server('/adb', 'serial', 'direct'), 'ready')
         validate.assert_called_once_with('/adb', 'serial', 'direct')
+        sync.assert_called_once_with('17.18.0')
         stop.assert_called_once_with('/adb', 'serial', 'direct')
 
         for state_name, message in (
@@ -832,7 +835,7 @@ class InstallAndShellTests(unittest.TestCase):
 
 # ---------------------------------------------------------------------------
 # HOST FALLBACKS AND NONINTERACTIVE GUARD
-# An optional adbutils binary is only located, never imported.  Default mode is
+# The bundled adbutils binary is only located, never imported. Default mode is
 # prevented from deploying and then hanging when it has no controlling terminal.
 # ---------------------------------------------------------------------------
 class HostSafetyTests(unittest.TestCase):
@@ -871,14 +874,14 @@ class HostSafetyTests(unittest.TestCase):
                         self.assertEqual(setup.resolve_adb(None), str(binary.resolve()))
                     distribution.locate_file.assert_called_once_with(f'adbutils/binaries/{name}')
 
-    def test_missing_adb_reports_the_optional_fallback_install_path(self):
+    def test_missing_adb_reports_the_initialization_command(self):
         with mock.patch.object(setup.shutil, 'which', return_value=None), \
                 mock.patch.object(
                     setup.metadata,
                     'distribution',
                     side_effect=setup.metadata.PackageNotFoundError('adbutils'),
                 ):
-            with self.assertRaisesRegex(setup.SetupError, r'Android Debug Bridge.*requirements-adb\.txt'):
+            with self.assertRaisesRegex(setup.SetupError, r'Android Debug Bridge.*python init\.py'):
                 setup.resolve_adb(None)
 
     def test_present_adbutils_without_a_matching_binary_reports_the_install_path(self):
@@ -886,7 +889,7 @@ class HostSafetyTests(unittest.TestCase):
         distribution.locate_file.return_value = Path('/missing/adb')
         with mock.patch.object(setup.shutil, 'which', return_value=None), \
                 mock.patch.object(setup.metadata, 'distribution', return_value=distribution):
-            with self.assertRaisesRegex(setup.SetupError, r'Android Debug Bridge.*requirements-adb\.txt'):
+            with self.assertRaisesRegex(setup.SetupError, r'Android Debug Bridge.*python init\.py'):
                 setup.resolve_adb(None)
         name = 'adb.exe' if setup.sys.platform.startswith('win') else 'adb'
         distribution.locate_file.assert_called_once_with(f'adbutils/binaries/{name}')
@@ -987,7 +990,7 @@ class HostSafetyTests(unittest.TestCase):
                             validate = stack.enter_context(mock.patch.object(setup, 'validate_existing_server'))
                             foreground = stack.enter_context(mock.patch.object(setup, 'run_foreground_server'))
                             shell = stack.enter_context(mock.patch.object(setup, 'open_device_shell'))
-                            warning = stack.enter_context(mock.patch.object(setup, 'warn_frida_version'))
+                            sync = stack.enter_context(mock.patch.object(setup, 'ensure_host_frida_version'))
                             temporary_directory = stack.enter_context(
                                 mock.patch.object(setup.tempfile, 'TemporaryDirectory'),
                             )
@@ -1001,7 +1004,7 @@ class HostSafetyTests(unittest.TestCase):
                     listing.assert_called_once_with('/adb')
                     for operation in (
                         target, root, artifact, release, download, install,
-                        prepare, validate, foreground, shell, warning,
+                        prepare, validate, foreground, shell, sync,
                     ):
                         operation.assert_not_called()
                     temporary_directory.assert_not_called()
@@ -1054,7 +1057,7 @@ class HostSafetyTests(unittest.TestCase):
                     mock.patch.object(setup, 'validate_target', return_value=(35, 'arm64-v8a', 'arm64')) as target, \
                     mock.patch.object(setup, 'probe_root', return_value='su-c') as root, \
                     mock.patch.object(setup, 'select_server_artifact', return_value=artifact) as select, \
-                    mock.patch.object(setup, 'warn_frida_version'), \
+                    mock.patch.object(setup, 'ensure_host_frida_version'), \
                     mock.patch.object(setup, 'install_server') as install, \
                     mock.patch.object(setup, 'run_foreground_server', side_effect=shell_after_cleanup) as foreground, \
                     mock.patch.object(setup.sys, 'stdin', TtyBuffer()), \
@@ -1092,7 +1095,7 @@ class HostSafetyTests(unittest.TestCase):
                     mock.patch.object(setup, 'validate_target', return_value=(34, 'x86_64', 'x86_64')), \
                     mock.patch.object(setup, 'probe_root', return_value='direct'), \
                     mock.patch.object(setup, 'select_server_artifact', return_value=artifact), \
-                    mock.patch.object(setup, 'warn_frida_version'), \
+                    mock.patch.object(setup, 'ensure_host_frida_version'), \
                     mock.patch.object(setup, 'install_server') as install, \
                     mock.patch.object(setup, 'run_foreground_server', return_value=7) as foreground, \
                     mock.patch.object(setup, 'open_device_shell') as shell:

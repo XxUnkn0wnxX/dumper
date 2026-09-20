@@ -1,5 +1,9 @@
 import logging
+import builtins
+import io
 from pathlib import Path
+import runpy
+import signal
 import subprocess
 import sys
 import unittest
@@ -72,6 +76,24 @@ class HookLifecycleTests(unittest.TestCase):
         session.detach.assert_called_once_with()
         self.assertEqual(device.capture_sessions, ())
 
+    def test_failed_hook_detach_defers_interrupt_before_wrapping_error(self):
+        session = mock.Mock()
+        session.create_script.return_value.load.side_effect = RuntimeError('load failed')
+        completed = []
+
+        def detach():
+            signal.raise_signal(signal.SIGINT)
+            completed.append(True)
+
+        session.detach.side_effect = detach
+        device = self.make_device(session)
+
+        with self.assertRaises(KeyboardInterrupt):
+            device.hook_to_process('drm_process', 'libwvhidl.so')
+
+        self.assertEqual(completed, [True])
+        session.detach.assert_called_once_with()
+
 
 # ---------------------------------------------------------------------------
 # DISCOVERY SESSION LIFECYCLE
@@ -132,6 +154,24 @@ class DiscoveryLifecycleTests(unittest.TestCase):
         process.detach.assert_called_once_with()
         process.create_script.assert_called_once_with('script')
         script.load.assert_called_once_with()
+
+    def test_discovery_detach_defers_an_interrupt_before_return(self):
+        device, process, script = self.make_device()
+        module = object()
+        script.exports.getmodulebyname.return_value = module
+        completed = []
+
+        def detach():
+            signal.raise_signal(signal.SIGINT)
+            completed.append(True)
+
+        process.detach.side_effect = detach
+
+        with self.assertRaises(KeyboardInterrupt):
+            device.find_widevine_process('drm_process')
+
+        self.assertEqual(completed, [True])
+        process.detach.assert_called_once_with()
 
 
 # ---------------------------------------------------------------------------
@@ -333,6 +373,69 @@ class CdmCommandLineTests(unittest.TestCase):
 
         self.assertTrue(any('Stopped by user.' in line for line in logs.output))
 
+    def test_imported_run_entry_repairs_terminal_before_startup(self):
+        with mock.patch.object(dump_keys, 'prepare_terminal') as prepare, \
+                mock.patch.object(dump_keys, 'main', side_effect=KeyboardInterrupt), \
+                self.assertLogs('main', level='INFO'):
+            self.assertEqual(dump_keys.run(), 0)
+
+        prepare.assert_called_once_with()
+
+    def test_run_handles_interrupt_during_argument_parsing(self):
+        with mock.patch('argparse.ArgumentParser.parse_args', side_effect=KeyboardInterrupt), \
+                self.assertLogs('main', level='INFO') as logs:
+            self.assertEqual(dump_keys.run(), 0)
+
+        self.assertTrue(any('Stopped by user.' in line for line in logs.output))
+
+    def test_run_handles_interrupt_during_optional_adb_diagnostics(self):
+        self.adb_report.side_effect = KeyboardInterrupt
+        with mock.patch.object(sys, 'argv', ['dump_keys.py']), \
+                self.assertLogs('main', level='INFO') as logs:
+            self.assertEqual(dump_keys.run(), 0)
+
+        self.assertTrue(any('Stopped by user.' in line for line in logs.output))
+
+    def test_run_handles_interrupt_during_dependency_import(self):
+        with mock.patch.object(dump_keys, 'DEPENDENCY_IMPORT_INTERRUPTED', True), \
+                mock.patch.object(sys, 'argv', ['dump_keys.py']), \
+                self.assertLogs('main', level='INFO') as logs:
+            self.assertEqual(dump_keys.run(), 0)
+
+        self.assertTrue(any('Stopped by user.' in line for line in logs.output))
+
+    def test_run_handles_interrupt_during_device_selection(self):
+        with mock.patch.object(dump_keys, 'Device', side_effect=KeyboardInterrupt), \
+                mock.patch.object(sys, 'argv', ['dump_keys.py']), \
+                self.assertLogs('main', level='INFO') as logs:
+            self.assertEqual(dump_keys.run(), 0)
+
+        self.assertTrue(any('Stopped by user.' in line for line in logs.output))
+
+    def test_run_handles_interrupt_during_process_enumeration(self):
+        device = self.make_cli_device()
+        device.usb_device.enumerate_processes.side_effect = KeyboardInterrupt
+        with mock.patch.object(sys, 'argv', ['dump_keys.py']), \
+                mock.patch.object(dump_keys, 'Device', return_value=device), \
+                self.assertLogs('main', level='INFO') as logs:
+            self.assertEqual(dump_keys.run(), 0)
+
+        device.close.assert_called_once_with()
+        self.assertTrue(any('Stopped by user.' in line for line in logs.output))
+
+    def test_run_handles_interrupt_during_hook_setup(self):
+        device = self.make_cli_device(
+            [SimpleNamespace(name='drm_process')], ['libwvhidl.so'],
+        )
+        device.hook_to_process.side_effect = KeyboardInterrupt
+        with mock.patch.object(sys, 'argv', ['dump_keys.py']), \
+                mock.patch.object(dump_keys, 'Device', return_value=device), \
+                self.assertLogs('main', level='INFO') as logs:
+            self.assertEqual(dump_keys.run(), 0)
+
+        device.close.assert_called_once_with()
+        self.assertTrue(any('Stopped by user.' in line for line in logs.output))
+
     def test_connection_failures_during_startup_exit_without_waiting(self):
         for error_type in dump_keys.FRIDA_CONNECTION_ERRORS:
             for stage in ('construct', 'enumerate', 'discover'):
@@ -381,6 +484,21 @@ class CdmCommandLineTests(unittest.TestCase):
         main_mock.assert_called_once_with()
         self.assertTrue(any('Stopped by user.' in line for line in logs.output))
 
+    def test_run_ignores_a_second_interrupt_during_session_cleanup(self):
+        device = self.make_cli_device()
+
+        def interrupt_again():
+            signal.raise_signal(signal.SIGINT)
+
+        self.connection_class.return_value.close.side_effect = interrupt_again
+        with mock.patch.object(dump_keys, 'main', return_value=device), \
+                mock.patch.object(dump_keys.time, 'sleep', side_effect=KeyboardInterrupt), \
+                self.assertLogs('main', level='INFO'):
+            self.assertEqual(dump_keys.run(), 0)
+
+        self.connection_class.return_value.close.assert_called_once_with()
+        device.close.assert_called_once_with()
+
     def test_run_checks_capture_progress_while_waiting(self):
         device = mock.Mock()
         with mock.patch.object(dump_keys, 'main', return_value=device), \
@@ -421,13 +539,21 @@ class CdmCommandLineTests(unittest.TestCase):
 
 # ---------------------------------------------------------------------------
 # MISSING DEPENDENCIES
-# -S disables site packages only in a child interpreter. This tests the real
-# entry point without uninstalling anything or contacting an Android device.
+# -S disables site packages only in a child interpreter. Bootstrap is mocked
+# because these tests specifically simulate an already selected but incomplete
+# environment; they must never install packages or reconnect to a real device.
 # ---------------------------------------------------------------------------
 class MissingDependencyTests(unittest.TestCase):
     def run_without_site_packages(self, *arguments):
+        script = (
+            'import runpy, sys\n'
+            'from unittest import mock\n'
+            'sys.argv[0] = "dump_keys.py"\n'
+            'with mock.patch("Helpers.Bootstrap.bootstrap"):\n'
+            '    runpy.run_path("dump_keys.py", run_name="__main__")\n'
+        )
         return subprocess.run(
-            [sys.executable, '-S', 'dump_keys.py', *arguments],
+            [sys.executable, '-S', '-c', script, *arguments],
             cwd=Path(__file__).resolve().parents[1],
             capture_output=True, text=True, timeout=10, check=False,
         )
@@ -446,6 +572,66 @@ class MissingDependencyTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('--device-id', result.stdout)
         self.assertNotIn('Traceback', result.stderr)
+
+    def test_direct_entry_prepares_terminal_before_running(self):
+        script = Path(__file__).resolve().parents[1] / 'dump_keys.py'
+        with mock.patch('Helpers.CLI.prepare_terminal') as prepare, \
+                mock.patch('argparse.ArgumentParser.parse_args', side_effect=KeyboardInterrupt):
+            with self.assertRaises(SystemExit) as exit_error:
+                runpy.run_path(str(script), run_name='__main__')
+
+        self.assertEqual(exit_error.exception.code, 0)
+        prepare.assert_called_once_with()
+
+    def test_direct_entry_terminal_repair_interrupt_is_clean(self):
+        script = Path(__file__).resolve().parents[1] / 'dump_keys.py'
+        stderr = io.StringIO()
+        with mock.patch('Helpers.CLI.prepare_terminal', side_effect=KeyboardInterrupt), \
+                mock.patch.object(sys, 'stderr', stderr):
+            with self.assertRaises(SystemExit) as exit_error:
+                runpy.run_path(str(script), run_name='__main__')
+
+        self.assertEqual(exit_error.exception.code, 0)
+        self.assertIn('Stopped by user.', stderr.getvalue())
+
+    def test_dependency_import_interrupt_is_clean_at_direct_entry(self):
+        script = Path(__file__).resolve().parents[1] / 'dump_keys.py'
+        original_import = builtins.__import__
+
+        def interrupt_frida(name, *args, **kwargs):
+            if name == 'frida':
+                raise KeyboardInterrupt
+            return original_import(name, *args, **kwargs)
+
+        for argv in (['dump_keys.py'], ['dump_keys.py', '--help'],
+                     ['dump_keys.py', '--invalid-option']):
+            with self.subTest(argv=argv):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with mock.patch('Helpers.CLI.prepare_terminal'), \
+                        mock.patch('builtins.__import__', side_effect=interrupt_frida), \
+                        mock.patch.object(sys, 'argv', argv), \
+                        mock.patch.object(sys, 'stdout', stdout), \
+                        mock.patch.object(sys, 'stderr', stderr), \
+                        self.assertRaises(SystemExit) as exit_error:
+                    runpy.run_path(str(script), run_name='__main__')
+
+                self.assertEqual(exit_error.exception.code, 0)
+                self.assertNotIn('usage:', stdout.getvalue().lower())
+                self.assertNotIn('unrecognized arguments', stderr.getvalue().lower())
+
+    def test_dependency_import_interrupt_propagates_for_named_module(self):
+        script = Path(__file__).resolve().parents[1] / 'dump_keys.py'
+        original_import = builtins.__import__
+
+        def interrupt_frida(name, *args, **kwargs):
+            if name == 'frida':
+                raise KeyboardInterrupt
+            return original_import(name, *args, **kwargs)
+
+        with mock.patch('builtins.__import__', side_effect=interrupt_frida):
+            with self.assertRaises(KeyboardInterrupt):
+                runpy.run_path(str(script), run_name='dumper_named_import')
 
 
 # Direct execution runs the tests defined in this module for quick focused

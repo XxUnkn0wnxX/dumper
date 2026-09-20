@@ -1,10 +1,10 @@
 # 📦 Archived WKS-KEYS protobuf sources
 
-[← Back to the Dumper README](../../README.md) · [🧬 Protobuf maintenance](../../Helpers/README.md#source-provenance) · [🧰 Maintainer tools](../../tools/README.md#protobuf-regeneration)
+[← Back to the Dumper README](../../README.md) · [🧬 Protobuf maintenance](../../docs/protobuf.md#source-provenance)
 
 These ZIPs preserve the protobuf sources and historical generated Python modules
 from the three supplied WKS-KEYS bundles. They provide local reference copies for
-the [protobuf maintenance guide](../../Helpers/README.md#source-provenance), so
+the [protobuf maintenance guide](../../docs/protobuf.md#source-provenance), so
 maintainers can inspect the original schema without downloading the bundles again.
 
 Regeneration uses the editable [Helpers/wv_proto2.proto](../../Helpers/wv_proto2.proto).

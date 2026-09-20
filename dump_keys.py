@@ -10,12 +10,31 @@
 import argparse
 import time
 import logging
+import sys
+
+from Helpers.CLI import ignore_interrupts, prepare_terminal
+from Helpers.Bootstrap import BootstrapError, bootstrap
+
+# Repair a terminal left in raw mode before importing any Frida/ADB helpers.
+# Direct imports used by tests remain side-effect free.
+if __name__ == '__main__':
+    try:
+        prepare_terminal()
+        bootstrap(__file__)
+    except BootstrapError as error:
+        print(f'error: {error}', file=sys.stderr)
+        raise SystemExit(1)
+    except KeyboardInterrupt:
+        with ignore_interrupts():
+            print('\nStopped by user.', file=sys.stderr)
+        raise SystemExit(0)
 
 from Helpers.Browser import DEFAULT_SITE_FILE, launch_test_page
 
 # Keep --help usable even when the venv is missing required packages. Only
 # dependency import failures are deferred; broken project imports still surface.
 DEPENDENCY_IMPORT_ERROR = None
+DEPENDENCY_IMPORT_INTERRUPTED = False
 FRIDA_CONNECTION_ERRORS = ()
 CAPTURE_DISCONNECT_ERRORS = ()
 try:
@@ -31,6 +50,12 @@ except ImportError as error:
     if (error.name or '').split('.')[0] not in {'frida', 'Crypto', 'google', '_cffi_backend'}:
         raise
     DEPENDENCY_IMPORT_ERROR = str(error)
+except KeyboardInterrupt:
+    # The normal run() wrapper is not defined until this import block finishes.
+    # Defer the cancellation marker so direct CLI execution still exits cleanly.
+    if __name__ != '__main__':
+        raise
+    DEPENDENCY_IMPORT_INTERRUPTED = True
 
 
 # ------------------------------------------------------------------------------
@@ -83,6 +108,8 @@ def main():
         '--site-file', default=DEFAULT_SITE_FILE, metavar='PATH',
         help='Read the single test-page URL from this file (default: repo drm_test_site.txt).',
     )
+    if DEPENDENCY_IMPORT_INTERRUPTED:
+        raise KeyboardInterrupt
     args = parser.parse_args()
     if DEPENDENCY_IMPORT_ERROR is not None:
         parser.error(
@@ -155,7 +182,11 @@ def main():
         return device
     finally:
         if not ready:
-            device.close()
+            # A second Ctrl+C must not interrupt detachment while unwinding a
+            # cancelled discovery, hook, or browser setup. Real cleanup errors
+            # still propagate through this context.
+            with ignore_interrupts():
+                device.close()
 
 
 # ------------------------------------------------------------------------------
@@ -168,6 +199,10 @@ def run():
     device = None
     connection = None
     try:
+        # Imported callers do not pass through the __main__ bootstrap. Keep
+        # terminal repair inside the same cancellation path for those callers.
+        if __name__ != '__main__':
+            prepare_terminal()
         device = main()
         if device is None:
             return 1
@@ -179,7 +214,8 @@ def run():
             connection.check()
             device.warn_if_no_pair()
     except KeyboardInterrupt:
-        logging.getLogger('main').info('Stopped by user.')
+        with ignore_interrupts():
+            logging.getLogger('main').info('Stopped by user.')
         return 0
     except CAPTURE_DISCONNECT_ERRORS as error:
         logging.getLogger('main').warning(
@@ -207,10 +243,15 @@ def run():
         )
         return 1
     finally:
-        if connection is not None:
-            connection.close()
-        if device is not None:
-            device.close()
+        # The first Ctrl+C is handled above; keep a repeated terminal interrupt
+        # from abandoning listener/session cleanup or producing a traceback.
+        with ignore_interrupts():
+            try:
+                if connection is not None:
+                    connection.close()
+            finally:
+                if device is not None:
+                    device.close()
 
 
 if __name__ == '__main__':

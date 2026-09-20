@@ -9,6 +9,14 @@ import subprocess
 import sys
 import tempfile
 
+if __package__ in (None, ''):
+    # Direct ``python tools/regenerate_protobuf.py`` has ``tools/`` as its
+    # first import location. Add the repository root so the shared CLI helper
+    # remains available from any caller directory.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from Helpers.CLI import defer_interrupts, ignore_interrupts, prepare_terminal
+from Helpers.Bootstrap import BootstrapError, bootstrap
+
 
 # ------------------------------------------------------------------------------
 # REPOSITORY PATHS
@@ -85,26 +93,44 @@ def replace_outputs(outputs, staging):
     replaced = []
     try:
         for target, (pending, _) in staged.items():
-            pending.replace(target)
+            # Register before the atomic rename. If Ctrl+C arrives immediately
+            # after replace(), rollback still knows this target may have been
+            # changed and can restore it safely.
             replaced.append(target)
-    except OSError as error:
+            pending.replace(target)
+    except (OSError, KeyboardInterrupt) as error:
         recovery_errors = []
-        for index, target in enumerate(reversed(replaced)):
-            try:
-                if originals[target] is None:
-                    target.unlink()
-                else:
-                    restore = staging / f'restore-{index}'
-                    restore.write_bytes(originals[target])
-                    restore.chmod(staged[target][1])
-                    restore.replace(target)
-            except OSError as recovery_error:
-                recovery_errors.append(f'{target.name}: {recovery_error}')
+        # A second Ctrl+C must not interrupt restoration of tracked files.
+        with ignore_interrupts():
+            for index, target in enumerate(reversed(replaced)):
+                try:
+                    if originals[target] is None:
+                        try:
+                            target.unlink()
+                        except FileNotFoundError:
+                            pass
+                    else:
+                        restore = staging / f'restore-{index}'
+                        restore.write_bytes(originals[target])
+                        restore.chmod(staged[target][1])
+                        restore.replace(target)
+                except OSError as recovery_error:
+                    recovery_errors.append(f'{target.name}: {recovery_error}')
+        if isinstance(error, KeyboardInterrupt):
+            if recovery_errors:
+                with ignore_interrupts():
+                    print(
+                        'Warning: cancellation interrupted output replacement and '
+                        'rollback did not fully restore the previous files: '
+                        + '; '.join(recovery_errors),
+                        file=sys.stderr,
+                    )
+            raise
         detail = '; '.join(recovery_errors) or 'Previous output files restored.'
         raise RegenerationError(f'Could not replace outputs: {error}. {detail}') from error
 
 
-def main():
+def _run():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--protoc', default='protoc', help='Compiler executable or path (default: protoc).')
     mode = parser.add_mutually_exclusive_group()
@@ -118,8 +144,9 @@ def main():
         compiler = run_command([args.protoc, '--version'], 'Locating protoc')
         original_requirements = (ROOT / REQUIREMENTS).read_bytes()
         (ROOT / '.tmp').mkdir(exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix='protobuf-', dir=ROOT / '.tmp') as temporary:
-            staging = Path(temporary)
+        temporary = tempfile.TemporaryDirectory(prefix='protobuf-', dir=ROOT / '.tmp')
+        try:
+            staging = Path(temporary.name)
             run_command([
                 args.protoc, '--proto_path=.', f'--python_out={staging}', str(SCHEMA),
             ], 'Generating Python bindings')
@@ -151,10 +178,45 @@ def main():
                 print('Updated: ' + ', '.join(str(path) for path in changed))
             else:
                 print('Generated binding and runtime pin are already current.')
+        finally:
+            # TemporaryDirectory's normal __exit__ is vulnerable to a second
+            # terminal interrupt while removing a partially generated tree.
+            cleanup_active_exception = sys.exc_info()[0] is not None
+            try:
+                with defer_interrupts():
+                    temporary.cleanup()
+            except OSError as cleanup_error:
+                with ignore_interrupts():
+                    print(
+                        f'Warning: could not clean temporary protobuf staging: {cleanup_error}',
+                        file=sys.stderr,
+                    )
+                if not cleanup_active_exception:
+                    raise RegenerationError(
+                        f'Could not clean temporary protobuf staging: {cleanup_error}'
+                    ) from cleanup_error
     except (RegenerationError, OSError, UnicodeError) as error:
         print(f'error: {error}', file=sys.stderr)
         return 1
     return 0
+
+
+def main():
+    """Run regeneration and turn every user cancellation into status 130."""
+    try:
+        # Install terminal handling before argparse so Ctrl+C during parsing or
+        # version validation follows the same clean cancellation path.
+        prepare_terminal()
+        if __name__ == '__main__':
+            bootstrap(Path(__file__))
+        return _run()
+    except BootstrapError as error:
+        print(f'error: {error}', file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        with ignore_interrupts():
+            print('\nCancelled.', file=sys.stderr)
+        return 130
 
 
 if __name__ == '__main__':

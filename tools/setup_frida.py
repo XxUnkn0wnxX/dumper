@@ -8,6 +8,7 @@ reuses an existing installation; ``--no-shell`` has no follow-up root prompt.
 """
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import dataclass
 import hashlib
 from http.client import IncompleteRead
@@ -30,6 +31,13 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 import uuid
 
+if __package__ in (None, ''):
+    # Direct script execution starts with tools/ on sys.path, including when
+    # called from another directory. Shared helpers live in Helpers/.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from Helpers.CLI import defer_interrupts, ignore_interrupts, prepare_terminal
+from Helpers.Bootstrap import BootstrapError, bootstrap, running_in_virtual_environment
+
 
 # ------------------------------------------------------------------------------
 # REPOSITORY, CACHE, AND RELEASE CONSTANTS
@@ -46,11 +54,20 @@ REMOTE_SERVER = f'{REMOTE_DIRECTORY}/frida-server'
 DOWNLOAD_LIMIT = 256 * 1024 * 1024
 UNPACKED_LIMIT = 512 * 1024 * 1024
 TIMEOUT = 30
+PIP_TIMEOUT = 240
+PIP_CHECK_TIMEOUT = 60
 STOP_TIMEOUT = 10
 STOP_INTERVAL = 0.25
+STAGING_CLEANUP_TIMEOUT = 3
 FOREGROUND_STOP_TIMEOUT = 5
 WINDOWS_CHILD_CLEANUP_TIMEOUT = 5
 VERSION_PATTERN = re.compile(r'v?(\d+\.\d+\.\d+)\Z')
+PACKAGE_NAME_PATTERN = re.compile(r'[A-Za-z0-9][A-Za-z0-9._-]*\Z')
+PACKAGE_VERSION_PATTERN = re.compile(r'[A-Za-z0-9][A-Za-z0-9.!+_-]*\Z')
+PIP_ROUTING_ENVIRONMENT = ('PIP_TARGET', 'PIP_PREFIX', 'PIP_ROOT', 'PIP_USER', 'PIP_PYTHON')
+PIP_ROUTING_OPTIONS = frozenset(('target', 'prefix', 'root', 'user', 'python'))
+PIP_RESOLVER_ENVIRONMENT = ('PIP_NO_DEPS', 'PIP_USE_DEPRECATED', 'PIP_REQUIREMENT')
+PIP_RESOLVER_OPTIONS = frozenset(('no-deps', 'use-deprecated', 'requirement'))
 
 ARCHITECTURES = {
     'x86_64': {'abis': {'x86_64'}, 'elf_class': 2, 'machine': 62},
@@ -130,6 +147,32 @@ def command_output(command: list[str], purpose: str, *, timeout: int = TIMEOUT,
     return result
 
 
+def host_package_output(command: list[str], purpose: str, *, timeout: int) -> subprocess.CompletedProcess:
+    """Run a host Python package command with host-specific failure guidance."""
+    try:
+        result = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise SetupError(
+            f'{purpose} timed out after {timeout} seconds. The host Python package operation did not finish; '
+            'check the network and Python environment, then retry.'
+        ) from error
+    except OSError as error:
+        raise SetupError(f'{purpose}: could not start the host Python package command: {error}') from error
+    if result.returncode:
+        detail = ((result.stdout or '') + (result.stderr or '')).strip()
+        if len(detail) > 12000:
+            detail = f'{detail[:12000]}\n... output truncated'
+        suffix = f': {detail}' if detail else ''
+        raise SetupError(f'{purpose} failed (exit {result.returncode}){suffix}')
+    return result
+
+
 def resolve_adb(requested: str | None) -> str:
     """Find an explicit ADB executable, PATH ADB, or adbutils' bundled binary."""
     if requested:
@@ -148,8 +191,8 @@ def resolve_adb(requested: str | None) -> str:
     if resolved:
         return resolved
 
-    # adbutils is an optional convenience fallback.  It is inspected as package
-    # data only; importing it could load unrelated Python dependencies.
+    # Main requirements install adbutils as the fallback on supported hosts.
+    # Inspect package data only; importing it could load unrelated dependencies.
     try:
         distribution = metadata.distribution('adbutils')
     except metadata.PackageNotFoundError:
@@ -166,8 +209,8 @@ def resolve_adb(requested: str | None) -> str:
     raise SetupError(
         'Android Debug Bridge (adb) was not found. Install Android SDK Platform-Tools '
         '(Homebrew: brew install --cask android-platform-tools), put adb on PATH, or pass --adb. '
-        'For an optional bundled ADB on supported hosts, run '
-        'python -m pip install -r tools/requirements-adb.txt using the same Python environment as this helper.'
+        'For the bundled ADB fallback on supported hosts, run '
+        'python init.py using the same Python environment as this helper.'
     )
 
 
@@ -322,11 +365,12 @@ def probe_root(adb: str, serial: str) -> str:
 
 
 def run_root(adb: str, serial: str, mode: str, command: str, purpose: str,
-             *, check: bool = True, capture: bool = True) -> subprocess.CompletedProcess:
+             *, check: bool = True, capture: bool = True,
+             timeout: int = TIMEOUT) -> subprocess.CompletedProcess:
     """Run one literal remote shell command through the verified root mechanism."""
     return adb_command(
         adb, serial, *root_command(mode, command), purpose=purpose,
-        check=check, capture=capture,
+        check=check, capture=capture, timeout=timeout,
     )
 
 
@@ -585,11 +629,26 @@ def materialize_highest_cached(architecture: str, destination: Path,
     raise CacheError(f'No valid cached Frida archive exists for Android {architecture}.')
 
 
+@contextmanager
+def scratch_directory(prefix: str, directory: Path):
+    """Clean disposable files without masking cancellation or its exit status."""
+    temporary = tempfile.TemporaryDirectory(prefix=prefix, dir=directory)
+    try:
+        yield Path(temporary.name)
+    finally:
+        # Only cleanup is shielded; network and device operations remain
+        # interruptible. Never replace KeyboardInterrupt with a removal error.
+        with defer_interrupts():
+            try:
+                temporary.cleanup()
+            except OSError as error:
+                print(f'Warning: temporary files remain in {temporary.name}: {error}', file=sys.stderr)
+
+
 def cache_release(release: Release, architecture: str) -> CachedArtifact:
     """Download, validate, and atomically publish one official archive to cache."""
     CACHE_ROOT.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix='download-', dir=CACHE_ROOT) as temporary:
-        staging = Path(temporary)
+    with scratch_directory('download-', CACHE_ROOT) as staging:
         archive = staging / release.asset_name
         extracted = staging / 'frida-server'
         download_asset(release, archive)
@@ -844,7 +903,11 @@ def prepare_existing_server(adb: str, serial: str, root_mode: str) -> str:
         raise SetupError(f'{REMOTE_SERVER} is not executable; reinstall Frida server or fix its permissions.')
     if state == 'special':
         raise SetupError(f'{REMOTE_SERVER} is not a regular executable file; refuse to execute it.')
-    validate_existing_server(adb, serial, root_mode)
+    installed_version = validate_existing_server(adb, serial, root_mode)
+    # The reported executable is the authoritative server selection in shell
+    # mode. Synchronize before signalling it so an incompatible host never
+    # starts a foreground server.
+    ensure_host_frida_version(installed_version)
     # A foreground terminal cannot attach to an old daemon. Stop only process
     # paths proven to be this managed server, then recheck before terminal use.
     stop_managed_servers(adb, serial, root_mode)
@@ -1035,7 +1098,8 @@ def handoff_to_adb(argv: list[str], purpose: str) -> NoReturn:
             try:
                 returncode = process.wait()
             except KeyboardInterrupt:
-                _reap_windows_adb_child(process)
+                with ignore_interrupts():
+                    _reap_windows_adb_child(process)
                 print(
                     'ADB session cancelled. Reconnect the Android device if needed '
                     'before retrying setup.',
@@ -1043,7 +1107,8 @@ def handoff_to_adb(argv: list[str], purpose: str) -> NoReturn:
                 )
                 raise SystemExit(130) from None
             except OSError as error:
-                _reap_windows_adb_child(process)
+                with ignore_interrupts():
+                    _reap_windows_adb_child(process)
                 raise SetupError(
                     f'{purpose}: ADB session wait failed: {error}. '
                     'Reconnect the Android device if needed before retrying.'
@@ -1069,15 +1134,15 @@ def run_foreground_server(adb: str, serial: str, root_mode: str, *, interactive:
     terminal_mode = '-t' if interactive or (sys.stdin.isatty() and sys.stdout.isatty()) else '-T'
     argv = [adb, '-s', serial, shell_arguments[0], terminal_mode, shell_arguments[1]]
     if interactive:
-        print('Handing terminal to ADB. Frida runs in the foreground; Ctrl+C stops it and opens the root prompt.')
-        print(f'If Frida hangs during shutdown, this session force-stops its server after {FOREGROUND_STOP_TIMEOUT} seconds.')
+        print('\nOpening ADB terminal; starting Frida in the foreground.')
+        print(f'Ctrl+C: stop Frida (force-stop after {FOREGROUND_STOP_TIMEOUT}s if needed).')
         if root_mode != 'direct':
-            print('Then exit leaves su; exit again closes the ADB shell.')
+            print('Then exit twice: root shell -> Android shell -> host.')
         else:
-            print('ADB is already root; exit closes the ADB shell.')
+            print('Then exit: root shell -> host.')
     else:
-        print('Handing terminal to ADB. Frida runs in the foreground until it stops; no follow-up shell.')
-        print(f'Ctrl+C allows {FOREGROUND_STOP_TIMEOUT} seconds for shutdown before force-stopping this session\'s server.')
+        print('\nStarting Frida in the ADB terminal; no follow-up shell.')
+        print(f'Ctrl+C: stop Frida (force-stop after {FOREGROUND_STOP_TIMEOUT}s if needed).')
     handoff_to_adb(argv, 'Running foreground Frida server failed')
 
 
@@ -1139,32 +1204,288 @@ def install_server(adb: str, serial: str, root_mode: str, server: Path,
         if cleanup_needed:
             # Best effort only: do not touch the existing destination, running
             # server, or any path except the UUID-bearing staging file we made.
-            try:
-                run_root(
-                    adb, serial, root_mode, remote_quote('rm', staging),
-                    'Removing failed Frida staging file', check=False,
-                )
-            except SetupError as error:
-                print(f'Warning: could not remove failed Frida staging file {staging}: {error}', file=sys.stderr)
+            with ignore_interrupts():
+                try:
+                    run_root(
+                        adb, serial, root_mode, remote_quote('rm', '-f', staging),
+                        'Removing partial Frida upload', timeout=STAGING_CLEANUP_TIMEOUT,
+                    )
+                except SetupError as error:
+                    print(f'Warning: partial upload may remain at {staging}: {error}', file=sys.stderr)
 
 
-def warn_frida_version(version: str) -> None:
-    """Warn when the local Python bindings would reject this server version."""
+def normalized_distribution_name(name: str) -> str:
+    """Normalize a distribution name without loading an optional packaging library."""
+    return re.sub(r'[-_.]+', '-', name).lower()
+
+
+def installed_host_requirements(version: str) -> list[str]:
+    """Pin the current environment while leaving Frida and frida-tools resolvable.
+
+    A complete requirement set lets pip check reverse dependencies before any
+    mutation. Distribution metadata is validated before it is written to the
+    temporary requirements file, so malformed local metadata cannot add pip
+    options or another requirement source.
+    """
+    requirements: dict[str, str] = {}
+    for distribution in metadata.distributions():
+        name = distribution.metadata.get('Name')
+        installed_version = distribution.version
+        if not isinstance(name, str) or not PACKAGE_NAME_PATTERN.fullmatch(name):
+            raise SetupError(
+                'An installed Python distribution has an unsafe or missing name; '
+                'refuse to construct a pip requirements file from local metadata.'
+            )
+        if not isinstance(installed_version, str) or not PACKAGE_VERSION_PATTERN.fullmatch(installed_version):
+            raise SetupError(
+                f'Installed Python distribution {name!r} has an unsafe version; '
+                'refuse to construct a pip requirements file from local metadata.'
+            )
+        normalized = normalized_distribution_name(name)
+        if normalized in {'frida', 'frida-tools'}:
+            continue
+        requirement = f'{name}=={installed_version}'
+        existing = requirements.get(normalized)
+        if existing is not None and existing != requirement:
+            raise SetupError(
+                f'Installed Python metadata has conflicting entries for {name!r}; '
+                'refuse to change the environment automatically.'
+            )
+        requirements[normalized] = requirement
+    return [requirements[name] for name in sorted(requirements)] + [
+        f'frida=={version}',
+        'frida-tools',
+    ]
+
+
+def host_pip_install_command(requirements_file: Path, *, dry_run: bool) -> list[str]:
+    """Build the resolver command without selecting a different interpreter."""
+    command = [
+        sys.executable, '-I', '-m', 'pip', 'install', '--upgrade',
+        '--disable-pip-version-check', '--no-input', '--progress-bar', 'off',
+        '--only-binary=frida', '--require-virtualenv',
+        '--timeout', '30', '--retries', '2',
+    ]
+    if dry_run:
+        command.append('--dry-run')
+    return [*command, '--requirement', str(requirements_file)]
+
+
+def fresh_host_frida_version() -> tuple[str, str | None]:
+    """Read distribution and imported binding versions in a new interpreter."""
+    script = (
+        'import json\n'
+        'from importlib import metadata\n'
+        'import frida\n'
+        'print(json.dumps({"distribution": metadata.version("frida"), '
+        '"module": getattr(frida, "__version__", None)}))\n'
+    )
+    result = host_package_output(
+        [sys.executable, '-I', '-c', script],
+        'Verifying the installed host Python Frida bindings', timeout=PIP_CHECK_TIMEOUT,
+    )
+    try:
+        report = json.loads((result.stdout or '').strip().splitlines()[-1])
+    except (IndexError, json.JSONDecodeError) as error:
+        raise SetupError(
+            'Host Python Frida verification returned an unreadable version report.'
+        ) from error
+    distribution = report.get('distribution') if isinstance(report, dict) else None
+    imported = report.get('module') if isinstance(report, dict) else None
+    if not isinstance(distribution, str) or not (isinstance(imported, str) or imported is None):
+        raise SetupError('Host Python Frida verification returned invalid version fields.')
+    return distribution, imported
+
+
+def frida_update_verb(installed: str | None, version: str) -> str:
+    """Describe a numeric Frida transition without lexicographic comparison."""
+    if installed is None:
+        return 'installing'
+    match = VERSION_PATTERN.fullmatch(installed)
+    if match is None:
+        return 'updating'
+    installed_parts = tuple(int(part) for part in match.group(1).split('.'))
+    target_parts = tuple(int(part) for part in version.split('.'))
+    if installed_parts < target_parts:
+        return 'upgrading'
+    if installed_parts > target_parts:
+        return 'downgrading'
+    return 'updating'
+
+
+def host_environment_guidance() -> str:
+    """Keep package-operation failures actionable without changing interpreters."""
+    return (
+        f'This helper only updates its running interpreter ({sys.executable}). '
+        'Create or activate a virtual environment and rerun this helper there. '
+        'If a matching Frida wheel is unavailable for this Python/platform, choose a supported interpreter; '
+        'native source builds are intentionally disabled.'
+    )
+
+
+def pip_routing_configuration() -> list[str]:
+    """Reject pip settings that redirect or weaken the complete resolver run."""
+    configured_environment = [name for name in PIP_ROUTING_ENVIRONMENT if name in os.environ]
+    if configured_environment:
+        raise SetupError(
+            'Automatic host Frida sync refuses pip routing environment variables: '
+            f'{", ".join(configured_environment)}.'
+        )
+    resolver_environment = [name for name in PIP_RESOLVER_ENVIRONMENT if name in os.environ]
+    if resolver_environment:
+        raise SetupError(
+            'Automatic host Frida sync refuses pip dependency-resolution environment variables: '
+            f'{", ".join(resolver_environment)}.'
+        )
+    result = host_package_output(
+        [sys.executable, '-I', '-m', 'pip', 'config', 'list'],
+        'Checking pip installation routing configuration', timeout=PIP_CHECK_TIMEOUT,
+    )
+    routing_overrides = []
+    resolver_overrides = []
+    for line in (result.stdout or '').splitlines():
+        key, separator, _value = line.partition('=')
+        if not separator:
+            continue
+        option = key.strip().strip("'\"").lower().rsplit('.', 1)[-1]
+        if option in PIP_ROUTING_OPTIONS:
+            routing_overrides.append(key.strip())
+        if option in PIP_RESOLVER_OPTIONS:
+            resolver_overrides.append(key.strip())
+    if routing_overrides:
+        raise SetupError(
+            'Automatic host Frida sync refuses pip routing configuration: '
+            f'{", ".join(routing_overrides)}.'
+        )
+    if resolver_overrides:
+        raise SetupError(
+            'Automatic host Frida sync refuses pip dependency-resolution configuration: '
+            f'{", ".join(resolver_overrides)}.'
+        )
+    return []
+
+
+def ensure_host_frida_version(version: str) -> None:
+    """Synchronize host bindings to the selected deployable Android server version.
+
+    An exact initial match is a metadata-only no-op. Otherwise, preflight the
+    full current environment before pip mutates it, preserving all existing
+    package versions except Frida and frida-tools. New dependencies may be
+    resolved when required by a compatible frida-tools release.
+    """
+    version = normalize_version(version)
     try:
         installed = metadata.version('frida')
     except metadata.PackageNotFoundError:
-        print(
-            f'Warning: Python package frida is not installed. Install frida=={version} '
-            'in the environment used by dump_keys.py.',
-            file=sys.stderr,
-        )
+        installed = None
+    if installed == version:
+        print(f'Host Python frida {version} matches the selected Android server.', flush=True)
         return
-    if installed != version:
-        print(
-            f'Warning: installed Python frida is {installed}, but server is {version}. '
-            f'Install matching bindings, for example: python -m pip install "frida=={version}"',
-            file=sys.stderr,
+
+    current = installed if installed is not None else 'not installed'
+    print(
+        f'Warning: host Python frida is {current}, but the selected Android server is {version}. '
+        'Synchronizing exact versions before deployment.',
+        file=sys.stderr, flush=True,
+    )
+    if not running_in_virtual_environment():
+        raise SetupError(
+            'Automatic host Frida sync only changes a virtual environment. '
+            f'{host_environment_guidance()}'
         )
+    try:
+        pip_routing_configuration()
+    except SetupError as error:
+        raise SetupError(
+            f'Automatic host Frida sync will not run with redirected pip installation routing. '
+            f'{error} {host_environment_guidance()}'
+        ) from error
+    print(
+        f'Automatically {frida_update_verb(installed, version)} host Python Frida: '
+        f'{current} -> frida=={version} using {sys.executable} (environment {sys.prefix}).',
+        flush=True,
+    )
+    print(
+        'Resolving a compatible frida-tools version while keeping other installed package versions fixed.',
+        flush=True,
+    )
+    try:
+        host_package_output(
+            [sys.executable, '-I', '-m', 'pip', 'check'],
+            'Checking current host Python package dependencies', timeout=PIP_CHECK_TIMEOUT,
+        )
+    except SetupError as error:
+        raise SetupError(
+            f'Host Python dependencies are already inconsistent; automatic Frida sync will not modify them. '
+            f'{error} {host_environment_guidance()}'
+        ) from error
+
+    try:
+        requirements = installed_host_requirements(version)
+    except SetupError as error:
+        raise SetupError(f'Could not preflight host Python package requirements. {error} {host_environment_guidance()}') from error
+
+    TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    with scratch_directory('frida-pip-', TMP_ROOT) as staging:
+        requirements_file = staging / 'host-frida-requirements.txt'
+        requirements_file.write_text('\n'.join(requirements) + '\n', encoding='utf-8')
+        try:
+            print('Preflighting the complete host Python dependency set...', flush=True)
+            host_package_output(
+                host_pip_install_command(requirements_file, dry_run=True),
+                'Preflighting the host Python Frida update', timeout=PIP_TIMEOUT,
+            )
+        except SetupError as error:
+            raise SetupError(
+                f'Host Python Frida update was not started because its dependency preflight failed. '
+                f'{error} {host_environment_guidance()}'
+            ) from error
+        try:
+            print('Installing the preflighted host Python Frida update...', flush=True)
+            host_package_output(
+                host_pip_install_command(requirements_file, dry_run=False),
+                'Updating host Python Frida packages', timeout=PIP_TIMEOUT,
+            )
+        except KeyboardInterrupt:
+            with ignore_interrupts():
+                print(
+                    'Host Frida update was cancelled while pip was changing this virtual environment. '
+                    'The virtual environment may be partially changed; Android was not changed. '
+                    'Inspect or repair the virtual environment before retrying.',
+                    file=sys.stderr,
+                )
+            raise
+        except SetupError as error:
+            raise SetupError(
+                f'Host Python Frida update did not complete. No Android server was changed; '
+                f'the interrupted or failed pip operation may have changed this host environment. '
+                f'{error} {host_environment_guidance()}'
+            ) from error
+
+    try:
+        distribution, imported = fresh_host_frida_version()
+    except SetupError as error:
+        raise SetupError(
+            f'Host Python Frida update completed, but fresh-process verification failed. '
+            f'No Android server was changed. {error} {host_environment_guidance()}'
+        ) from error
+    if distribution != version or imported != version:
+        raise SetupError(
+            f'Host Python Frida verification expected {version}, but the distribution reports '
+            f'{distribution!r} and the imported module reports {imported!r}. No Android server was changed. '
+            f'{host_environment_guidance()}'
+        )
+    try:
+        host_package_output(
+            [sys.executable, '-I', '-m', 'pip', 'check'],
+            'Checking host Python package dependencies after the Frida update', timeout=PIP_CHECK_TIMEOUT,
+        )
+    except SetupError as error:
+        raise SetupError(
+            f'Host Python Frida installed {version}, but its dependency check failed. '
+            f'No Android server was changed. {error} {host_environment_guidance()}'
+        ) from error
+    print(f'Host Python Frida synchronized: {version} (fresh import and dependency check passed).', flush=True)
 
 
 def open_device_shell(adb: str, serial: str, root_mode: str) -> NoReturn:
@@ -1196,11 +1517,11 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.shell and (args.ver or args.arch != 'auto'):
-        parser.error('--shell cannot be combined with --ver or an explicit --arch; it does not install Frida.')
+        parser.error('--shell cannot be combined with --ver or an explicit --arch; it does not replace the Android server.')
     if args.ver:
         try:
             args.ver = normalize_version(args.ver)
@@ -1210,8 +1531,9 @@ def main(argv: list[str] | None = None) -> int:
         parser.error('the default interactive shell requires a TTY; use --no-shell for unattended installation.')
 
     try:
+        print('\nFrida setup (Ctrl+C to cancel)', flush=True)
         adb = resolve_adb(args.adb)
-        print(f'Using ADB: {adb}', flush=True)
+        print(f'ADB: {adb}', flush=True)
         # Require an online ADB transport before root checks, scratch/cache
         # access, release lookup, downloads, or any device changes.
         device = select_device(list_adb_devices(adb), args.device_id)
@@ -1223,8 +1545,7 @@ def main(argv: list[str] | None = None) -> int:
             if action == 'ready':
                 installed_version = validate_existing_server(adb, device.serial, root_mode)
                 print(
-                    f'Found existing Frida server {installed_version} on {device.serial}; '
-                    'starting it in the foreground.',
+                    f'Using installed Frida {installed_version} on {device.serial}.',
                     flush=True,
                 )
                 return run_foreground_server(adb, device.serial, root_mode, interactive=True)
@@ -1241,36 +1562,40 @@ def main(argv: list[str] | None = None) -> int:
         # and restart adbd. Normal setup only mutates after this preflight.
         sdk, abi, architecture = validate_target(adb, device.serial, args.arch)
         root_mode = probe_root(adb, device.serial)
-        print(f'Using {device.serial}: Android SDK {sdk}, ABI {abi}, arch {architecture}, root via {root_mode}.', flush=True)
+        print(f'Device: {device.serial} | API {sdk} | ABI {abi} | root {root_mode}', flush=True)
 
         TMP_ROOT.mkdir(exist_ok=True)
-        with tempfile.TemporaryDirectory(prefix='frida-', dir=TMP_ROOT) as temporary:
-            staging = Path(temporary)
+        with scratch_directory('frida-', TMP_ROOT) as staging:
             server = staging / 'frida-server'
             artifact = select_server_artifact(args.ver, architecture, server)
-            warn_frida_version(artifact.version)
-            print(
-                f'Selected Frida {artifact.version} ({artifact.asset_name}) for Android {architecture}.',
-                flush=True,
-            )
-            print(f'Deploying Frida {artifact.version} to {device.serial}.', flush=True)
+            ensure_host_frida_version(artifact.version)
+            print(f'Installing Frida {artifact.version} on {device.serial}...', flush=True)
             install_server(adb, device.serial, root_mode, server, artifact.version)
 
-        print(
-            f'Installed Frida server {artifact.version} at {REMOTE_SERVER} on {device.serial}; '
-            'starting it in the foreground.',
-            flush=True,
-        )
+        print(f'Installed: {REMOTE_SERVER}', flush=True)
         return run_foreground_server(adb, device.serial, root_mode, interactive=not args.no_shell)
     except SetupError as error:
         print(f'error: {error}', file=sys.stderr)
         return 1
-    except KeyboardInterrupt:
-        print('\nCancelled.', file=sys.stderr)
-        return 130
     except OSError as error:
         print(f'error: {error}', file=sys.stderr)
         return 1
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Make Ctrl+C work from terminal preparation through the ADB handoff."""
+    try:
+        prepare_terminal()
+        if __name__ == '__main__':
+            bootstrap(Path(__file__))
+        return _main(argv)
+    except BootstrapError as error:
+        print(f'error: {error}', file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        with ignore_interrupts():
+            print('\nCancelled.', file=sys.stderr)
+        return 130
 
 
 if __name__ == '__main__':

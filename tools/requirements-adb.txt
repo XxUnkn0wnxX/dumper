@@ -1,3 +1,0 @@
-# Optional bundled ADB fallback for tools/setup_frida.py.
---only-binary=adbutils
-adbutils==2.12.0

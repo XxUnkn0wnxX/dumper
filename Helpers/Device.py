@@ -14,10 +14,11 @@ from datetime import datetime, timedelta
 import frida
 from Crypto.PublicKey import RSA
 # Generated bindings decode the captured license request. Edit wv_proto2.proto
-# and run tools/regenerate_protobuf.py to rebuild them; see Helpers/README.md.
+# and run tools/regenerate_protobuf.py to rebuild them; see docs/protobuf.md.
 from Helpers.wv_proto2_pb2 import SignedLicenseRequest
 from Helpers.DeviceSelection import get_android_api_level, select_android_device
 from Helpers.Diagnostics import _run_cancellable
+from Helpers.CLI import defer_interrupts, ignore_interrupts
 
 
 # ------------------------------------------------------------------------------
@@ -439,14 +440,15 @@ class Device:
         finally:
             # End the discovery attachment even when setup or module lookup is
             # interrupted. Cleanup errors must not replace the original failure.
-            try:
-                _run_cancellable(process.detach)
-            except Exception as detach_error:
-                self.logger.warning(
-                    'Failed to detach discovery session for process %s: %s',
-                    process_name,
-                    detach_error,
-                )
+            with defer_interrupts():
+                try:
+                    _run_cancellable(process.detach)
+                except Exception as detach_error:
+                    self.logger.warning(
+                        'Failed to detach discovery session for process %s: %s',
+                        process_name,
+                        detach_error,
+                    )
         return loaded_modules
 
     # --------------------------------------------------------------------------
@@ -467,17 +469,19 @@ class Device:
             self._capture_sessions.append((session, script))
             return session
         except BaseException as error:
-            # Detach a partially initialized session without replacing the original
-            # hook error if cleanup itself fails.
+            # Detach a partially initialized session before reporting the hook
+            # failure. A Ctrl+C during this cleanup must stop the caller rather
+            # than being lost while main() moves to another library.
             if session is not None:
-                try:
-                    _run_cancellable(session.detach)
-                except Exception as detach_error:
-                    self.logger.warning(
-                        'Failed to detach unsuccessful hook session for process %s: %s',
-                        process,
-                        detach_error,
-                    )
+                with defer_interrupts():
+                    try:
+                        _run_cancellable(session.detach)
+                    except Exception as detach_error:
+                        self.logger.warning(
+                            'Failed to detach unsuccessful hook session for process %s: %s',
+                            process,
+                            detach_error,
+                        )
             if not isinstance(error, Exception):
                 raise
             raise HookError(
@@ -494,9 +498,10 @@ class Device:
         sessions = self.capture_sessions
         self._capture_sessions = []
         for session, _script in sessions:
-            try:
-                _run_cancellable(session.detach)
-            except (Exception, KeyboardInterrupt) as error:
-                # Lost transports are expected here. Cleanup must not turn a
-                # clean disconnect/Ctrl+C into a second failure or traceback.
-                self.logger.debug('Capture session cleanup unavailable: %s', error)
+            with ignore_interrupts():
+                try:
+                    _run_cancellable(session.detach)
+                except (Exception, KeyboardInterrupt) as error:
+                    # Lost transports are expected here. Cleanup must not turn a
+                    # clean disconnect/Ctrl+C into a second failure or traceback.
+                    self.logger.debug('Capture session cleanup unavailable: %s', error)

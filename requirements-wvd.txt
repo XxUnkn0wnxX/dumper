@@ -1,4 +1,4 @@
 # Optional WVD tooling: install in a separate .venv-wvd environment.
 # Do not combine with requirements.txt; the Protobuf requirements conflict.
-# See tools/README.md#optional-wvd-tooling for setup instructions.
+# See docs/wvd.md for setup instructions.
 pywidevine
