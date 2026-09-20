@@ -211,13 +211,25 @@ Platform-Tools without installing the full Android Studio IDE.
 
 Use the `main` branch for normal setup; ongoing changes are developed on
 `develop`. To create a fresh checkout, run the following from a directory where
-you keep source code. The SSH command requires an SSH key configured with your
-GitHub account:
+you keep source code. HTTPS does not require an SSH key:
+
+```sh
+git clone --branch main https://github.com/XxUnkn0wnxX/dumper.git
+cd dumper
+```
+
+<details>
+<summary>Prefer SSH? Clone with a configured GitHub SSH key</summary>
+
+SSH requires an SSH key configured on your computer and its public key added
+to your GitHub account. Once configured, use:
 
 ```sh
 git clone --branch main git@github.com:XxUnkn0wnxX/dumper.git
 cd dumper
 ```
+
+</details>
 
 If you already have this repository, change to its root instead. All paths in
 the guides assume that root, where `dump_keys.py`, `requirements.txt`, and

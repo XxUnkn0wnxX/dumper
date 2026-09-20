@@ -51,21 +51,22 @@ See [testing and verified scope](docs/testing.md#verified-scope) for the evidenc
 New computer? Start with [Python and Git installation](docs/setup.md#install-python-and-git)
 and [Android Studio / SDK setup](docs/android-setup.md#install-android-studio).
 The [setup guide](docs/setup.md) has complete checkout and environment commands.
-For a new checkout on macOS or Linux, SSH is preferred. The command below
-requires an SSH key configured on your computer and its public key added to
-your GitHub account. If you have not set that up, use the HTTPS alternative below.
+For a new checkout on macOS or Linux, use HTTPS (no SSH key required):
 
 ```sh
-git clone --branch main git@github.com:XxUnkn0wnxX/dumper.git
+git clone --branch main https://github.com/XxUnkn0wnxX/dumper.git
 cd dumper
 python3 init.py
 ```
 
 <details>
-<summary>Clone with HTTPS instead (no SSH key required)</summary>
+<summary>Prefer SSH? Clone with a configured GitHub SSH key</summary>
+
+SSH requires an SSH key configured on your computer and its public key added
+to your GitHub account. Once configured, use:
 
 ```sh
-git clone --branch main https://github.com/XxUnkn0wnxX/dumper.git
+git clone --branch main git@github.com:XxUnkn0wnxX/dumper.git
 cd dumper
 python3 init.py
 ```
