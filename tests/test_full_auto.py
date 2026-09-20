@@ -245,24 +245,60 @@ class FullAutoTests(unittest.TestCase):
     def test_run_success_returns_pair_waits_three_seconds_and_retains_logs(self):
         controller = self.make_controller()
         opened = {}
+        milestones = []
 
         def start_process(role, _arguments):
             process = FakeProcess()
             opened[role] = process
             controller.processes[role] = process
 
+        def pair_ready():
+            milestones.append('pair_verified')
+            return 'key_dumps/fresh-pair'
+
         with mock.patch.object(controller, 'start_process', side_effect=start_process), \
                 mock.patch.object(controller, 'wait_for_frida'), \
-                mock.patch.object(controller, 'wait_for_pair', return_value='key_dumps/fresh-pair'), \
-                mock.patch.object(full_auto.time, 'sleep') as sleep:
+                mock.patch.object(controller, 'wait_for_pair', side_effect=pair_ready), \
+                mock.patch.object(full_auto.time, 'sleep', side_effect=lambda _: milestones.append('grace')) as sleep, \
+                mock.patch.object(full_auto.setup_frida, 'adb_command',
+                                  side_effect=lambda *args, **kwargs: milestones.append('chrome_closed')) as adb:
             result = controller.run()
 
         self.assertEqual(result, 'key_dumps/fresh-pair')
         sleep.assert_called_once_with(full_auto.FINISH_DELAY)
+        self.assertEqual(milestones, ['pair_verified', 'grace', 'chrome_closed'])
+        adb.assert_called_once_with(
+            'adb-fixture', 'pixel', 'shell', 'am', 'force-stop', 'com.android.chrome',
+            purpose='Closing Chrome after capture', timeout=10,
+        )
         self.assertEqual(set(controller.processes), {'frida', 'dumper'})
         self.assertTrue(all(process.close_calls == 1 for process in opened.values()))
         self.assertFalse(controller.directory.exists())
         self.assertTrue(controller.log_directory.is_dir())
+
+    def test_chrome_stop_failure_warns_without_losing_pair_or_skipping_cleanup(self):
+        for error in (setup_frida.SetupError('ADB timed out'), OSError('ADB unavailable')):
+            with self.subTest(error=str(error)):
+                controller = self.make_controller()
+                opened = {}
+
+                def start_process(role, _arguments):
+                    opened[role] = FakeProcess()
+                    controller.processes[role] = opened[role]
+
+                stderr = io.StringIO()
+                with mock.patch.object(controller, 'start_process', side_effect=start_process), \
+                        mock.patch.object(controller, 'wait_for_frida'), \
+                        mock.patch.object(controller, 'wait_for_pair', return_value='key_dumps/fresh-pair'), \
+                        mock.patch.object(full_auto.time, 'sleep'), \
+                        mock.patch.object(full_auto.setup_frida, 'adb_command', side_effect=error), \
+                        redirect_stderr(stderr):
+                    self.assertEqual(controller.run(), 'key_dumps/fresh-pair')
+
+                self.assertIn('could not close Chrome on pixel', stderr.getvalue())
+                self.assertIn('saved pair is retained', stderr.getvalue())
+                self.assertTrue(all(process.close_calls == 1 for process in opened.values()))
+                self.assertFalse(controller.directory.exists())
 
     def test_run_failure_retains_session_and_logs_when_owned_process_close_fails(self):
         controller = self.make_controller()
@@ -278,10 +314,12 @@ class FullAutoTests(unittest.TestCase):
                 mock.patch.object(controller, 'wait_for_frida'), \
                 mock.patch.object(controller, 'wait_for_pair',
                                   side_effect=full_auto.AutoError('pair fixture failed')), \
+                mock.patch.object(controller, 'close_chrome') as chrome, \
                 redirect_stderr(stderr):
             with self.assertRaisesRegex(full_auto.AutoError, 'pair fixture failed'):
                 controller.run()
 
+        chrome.assert_not_called()
         self.assertTrue(controller.directory.is_dir())
         self.assertTrue(controller.log_directory.is_dir())
         self.assertEqual(opened['dumper'].close_calls, 1)
@@ -356,7 +394,7 @@ class FullAutoTests(unittest.TestCase):
             controller.cleanup()
 
     def test_run_cancellation_at_setup_dumper_wait_and_success_grace_cleans_process_metadata(self):
-        scenarios = ('setup', 'dumper', 'wait', 'grace')
+        scenarios = ('setup', 'dumper', 'wait', 'grace', 'chrome')
         for scenario in scenarios:
             with self.subTest(scenario=scenario):
                 controller = self.make_controller()
@@ -381,8 +419,12 @@ class FullAutoTests(unittest.TestCase):
                     mock.patch.object(controller, 'wait_for_frida'),
                     mock.patch.object(controller, 'wait_for_pair', side_effect=wait_for_pair),
                 ]
+                chrome = mock.Mock(side_effect=KeyboardInterrupt if scenario == 'chrome' else None)
+                patches.append(mock.patch.object(controller, 'close_chrome', chrome))
                 if scenario == 'grace':
                     patches.append(mock.patch.object(full_auto.time, 'sleep', side_effect=KeyboardInterrupt))
+                elif scenario == 'chrome':
+                    patches.append(mock.patch.object(full_auto.time, 'sleep'))
                 for patcher in patches:
                     patcher.start()
                 try:
@@ -397,7 +439,9 @@ class FullAutoTests(unittest.TestCase):
                     'dumper': {'frida', 'dumper'},
                     'wait': {'frida', 'dumper'},
                     'grace': {'frida', 'dumper'},
+                    'chrome': {'frida', 'dumper'},
                 }[scenario]
+                self.assertEqual(chrome.call_count, 1 if scenario == 'chrome' else 0)
                 self.assertEqual(set(controller.processes), expected)
                 self.assertTrue(all(process.close_calls == 1 for process in opened.values()))
                 self.assertFalse(controller.directory.exists())

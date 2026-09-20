@@ -19,6 +19,7 @@ import uuid
 from Helpers.AutoSession import MAX_ANDROID_API, MIN_ANDROID_API, marker_path, read_events
 from Helpers.AutoProcesses import ProcessError, launch_process
 from Helpers.AutoLogging import controller_logging, run_logged_subprocess
+from Helpers.Browser import CHROME_PACKAGE
 from Helpers.CLI import defer_interrupts, ignore_interrupts, prepare_terminal
 from tools import setup_frida
 
@@ -318,6 +319,23 @@ class AutoRun:
         except (setup_frida.SetupError, OSError):
             return False
 
+    def close_chrome(self):
+        """Close the test browser on this device after both output files are safe."""
+        print(f'Closing Chrome on {self.serial}...', flush=True)
+        try:
+            setup_frida.adb_command(
+                self.adb, self.serial, 'shell', 'am', 'force-stop', CHROME_PACKAGE,
+                purpose='Closing Chrome after capture', timeout=10,
+            )
+        except (setup_frida.SetupError, OSError) as error:
+            # Browser shutdown must not skip owned process cleanup or turn a
+            # successfully saved pair into a failed capture.
+            print(
+                f'Warning: could not close Chrome on {self.serial}: {error}. '
+                'The saved pair is retained; continuing session cleanup.',
+                file=sys.stderr, flush=True,
+            )
+
     def cleanup(self):
         """Stop owned jobs before deleting their status and PID metadata."""
         if self.directory is None:
@@ -388,6 +406,7 @@ class AutoRun:
             output = self.wait_for_pair()
             print(f'Both files are complete and verified: {output}. Finishing in {FINISH_DELAY}s...', flush=True)
             time.sleep(FINISH_DELAY)
+            self.close_chrome()
         finally:
             self.cleanup()
         if not self.cleanup_ok:

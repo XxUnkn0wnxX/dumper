@@ -108,19 +108,30 @@ output is mirrored to `logs/full_auto.log`. The repository's root `logs/`
 directory is gitignored. Manual setup and dumper runs keep their ordinary
 terminal output.
 
-On success, the controller waits three seconds for the child output to settle,
-then closes only the child processes and Frida server it started before the
-parent exits. **Ctrl+C** follows the same owned cancellation sequence. On
-Windows, `CTRL_BREAK` is mapped to that cancellation path. The controller never
-promises recovery of unrelated processes or remote Android state. Disposable
-PID and status metadata lives under `.tmp/full-auto-*`; normal completion and a
-handled Ctrl+C remove that metadata after cleanup, and it never contains key
-bytes. If owned cleanup cannot finish, the controller warns and retains the
-status metadata for diagnosis.
+On successful pair verification, the controller waits three seconds for the
+child output to settle, then attempts
+`adb -s SELECTED_SERIAL shell am force-stop com.android.chrome` with a
+10-second timeout. This closes Chrome without deleting browsing data or the
+saved pair, and does not revert earlier Chrome debug-app or command-line flag
+changes. If the ADB stop fails, the controller warns and still cleans the
+owned child processes and Frida server, retaining the saved pair. Cancellation
+or an error before a completed pair does not close Chrome.
+
+After that success cleanup, the controller closes only the child processes and
+Frida server it started before the parent exits. **Ctrl+C** follows the same
+owned cancellation sequence. On Windows, `CTRL_BREAK` is mapped to that
+cancellation path. The controller never promises recovery of unrelated
+processes or remote Android state. Disposable PID and status metadata lives
+under `.tmp/full-auto-*`; normal completion and a handled Ctrl+C remove that
+metadata after cleanup, and it never contains key bytes. If owned cleanup
+cannot finish, the controller warns and retains the status metadata for
+diagnosis.
 
 ## Platform scope
 
 Local tests cover POSIX background supervision, and native Windows supervision
-is mocked. Full-auto capture has not yet been validated on an Android device,
-so these checks do not establish Android compatibility or a cross-platform
-capture claim.
+is mocked. The latest user logs plus independent file parsing and matching
+verified one successful complete pair and cleanup on Android 12 / API 31
+x86_64 with Frida 17.18.0 and CDM 16.1.0. That evidence applies to the tested
+target only and is not a blanket API or platform compatibility claim. The new
+post-success Chrome-stop step has not yet been device-tested.
