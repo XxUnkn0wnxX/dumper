@@ -51,8 +51,8 @@ The helper detects the server architecture from Android's primary CPU ABI:
 | `arm64-v8a` | `arm64` (64-bit ARM) |
 | `armeabi-v7a` | `arm` (32-bit ARM) |
 
-For example, an x86_64 emulator receives the x86_64 build, while a physical
-Pixel 6 Pro receives the ARM64 build. You can select an architecture, release,
+For example, an x86_64 target receives the x86_64 build, while a target reporting
+`arm64-v8a` receives the ARM64 build. You can select an architecture, release,
 or device explicitly:
 
 ```sh
@@ -300,8 +300,9 @@ integrity, network failures, exact managed-process identity, foreground terminal
 input/output, Ctrl+C, bounded shutdown, nested `su-c`/`su-0` exits, and error statuses. The
 terminal tests are skipped on Windows because they use POSIX PTYs.
 
-The user confirmed capture testing through **Android 13 / API 33** on
-2026-09-20. The overall Android 9–13 / API 28–33 validation record is maintained
+The user confirmed emulator capture testing through **Android 13 / API 33** on
+2026-09-20. All live testing used Android Studio emulators; physical phones remain
+untested. The overall Android 9–13 / API 28–33 validation record is maintained
 in the [testing guide](testing.md#verified-scope), alongside the narrower helper
 checks below.
 

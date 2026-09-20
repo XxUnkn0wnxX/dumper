@@ -114,8 +114,9 @@ hooks are ready, a manual run continues waiting for playback and later
 callbacks even after its first pair is saved; press Ctrl+C to finish the run.
 The cleanup path protects Frida sessions from a repeated interrupt. A device or
 Frida disconnect exits status `1` with saved output retained. Native Windows
-terminal behavior and physical-device capture remain subject to the live scope
-in the [testing guide](testing.md#verified-scope).
+terminal behavior and physical-device capture remain unverified; live capture
+testing used Android Studio emulators only. See the
+[testing guide](testing.md#verified-scope).
 
 ## Output
 

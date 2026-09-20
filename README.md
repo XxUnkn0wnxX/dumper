@@ -1,16 +1,18 @@
 # 🧩 Dumper
 
 A Python and Frida tool for capturing Widevine L3 client IDs and matching private
-keys from rooted Android devices. This fork includes Android device selection,
-automatic request-layout detection, browser test-page setup, and maintainer
-tools.
+keys from root-capable Android emulators or rooted physical devices. This fork
+includes Android device selection, automatic request-layout detection, browser
+test-page setup, and maintainer tools.
 
 ## Android compatibility
 
 Capture testing was user-confirmed on **Android 9–13 / API 28–33** on
-2026-09-20, using the tested emulator images.
+2026-09-20, using Android Studio emulators only. **Physical phones have not been
+tested.** The emulator images provided root access; no separate phone-rooting
+procedure was performed.
 
-| Android version | API level | Capture testing | Full auto |
+| Android version | API level | Emulator capture testing | Full auto |
 | --- | --- | --- | --- |
 | Android 9 | 28 | ✅ User-confirmed | Allowed by the version check |
 | Android 10 | 29 | ✅ User-confirmed | Allowed by the version check |

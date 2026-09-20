@@ -157,22 +157,24 @@ temporary directories. Live device claims below remain separate evidence.
 
 ## Verified scope
 
-**User-confirmed capture testing: Android 9–13 / API 28–33**, completed on
-2026-09-20 with the tested emulator images. Earlier full-auto logs and saved
-files were also independently checked on Android 12 / API 31 x86_64 with
+**User-confirmed emulator capture testing: Android 9–13 / API 28–33**, completed on
+2026-09-20 using Android Studio emulators only. **No physical phones have been
+tested.** The emulator images provided root access; the user did not root any
+physical device. Earlier full-auto logs and saved files were also independently
+checked on an Android 12 / API 31 x86_64 emulator with
 Frida 17.18.0 and CDM 16.1.0: both files formed a matching pair and cleanup
 completed. Host-platform and device-specific limits are recorded below.
 
 | Area | Evidence | Still needs verification |
 | --- | --- | --- |
 | Python | Current development and regression checks run on Python 3.14.0; tested up to Python 3.14. The stated minimum is Python 3.10. | A complete matrix across every supported Python and host OS version. |
-| Experimental full auto | Offline controller/logging tests and local POSIX process supervision. Independent log and file parsing/matching verified one complete Android 12 / API 31 x86_64 run with Frida 17.18.0, CDM 16.1.0, and cleanup. | A broader full-auto Android matrix and native Windows lifecycle checks. |
-| Manual capture | User-confirmed capture testing through API 33. Earlier physical-device success was reported on a rooted Pixel 6 Pro running Android 13 with manual layout `17.0.0`. | Other physical devices and library builds. |
-| Automatic layout detection | User-confirmed capture range is API 28–33. Detailed earlier examples include Android 9 / API 28 with plain `python dump_keys.py`, `libwvhidl.so`, and `args[4]`, plus the verified API 31 full-auto run using `args[5]`. Offline checks cover 12 library fixtures from eight Android 9–13 SDK packages, including Android 12L. | Additional device/library builds and Android 14+ signatures. |
+| Experimental full auto | Offline controller/logging tests and local POSIX process supervision. Independent log and file parsing/matching verified one complete Android 12 / API 31 x86_64 emulator run with Frida 17.18.0, CDM 16.1.0, and cleanup. | A broader full-auto Android matrix, physical devices, and native Windows lifecycle checks. |
+| Manual capture | User-confirmed emulator capture testing through API 33. | Physical devices and additional library builds. |
+| Automatic layout detection | User-confirmed emulator capture range is API 28–33. Detailed earlier examples include Android 9 / API 28 with plain `python dump_keys.py`, `libwvhidl.so`, and `args[4]`, plus the verified API 31 full-auto emulator run using `args[5]`. Offline checks cover 12 library fixtures from eight Android 9–13 SDK packages, including Android 12L. | Physical devices, additional library builds, and Android 14+ signatures. |
 | Protobuf | Updated binding exercised by the user-confirmed capture workflow through API 33. Schema and serialization regressions also use synthetic requests from the original Protobuf 3.19.3 binding. | Validation after future schema/compiler/runtime updates. |
 | Capture folders | Live capture with the current layout, including an independently matched pair in `CDM 16.1.0 - API 31`; synthetic tests cover labels, timestamp collisions, and preservation of existing pairs. | Additional host filesystem behavior and failure scenarios. |
 | WVD generation | On macOS with Python 3.14.0 and pywidevine 1.9.0, six saved pairs from API 28–33 converted to Android L3 WVD v2 and passed private-key/client-ID round-trip checks. A rerun replaced the outputs, all source files stayed unchanged, and the main venv package set stayed unchanged. Synthetic tests cover invalid pairs, relative output paths, replacement, and interruption cleanup. | Native Windows/Linux runs and license-service acceptance. |
-| Frida setup helper | User-confirmed setup on Android 9, later verified API 31 full-auto setup with Frida 17.18.0, and live API 30 shutdown recovery. Mocked lifecycle/cache tests and local terminal checks cover other paths; an official release download was checked for integrity, extraction, cache reuse, and cleanup. | Additional `--shell` and root-manager combinations, and native Windows terminals. |
+| Frida setup helper | User-confirmed emulator setup on Android 9, later verified API 31 full-auto emulator setup with Frida 17.18.0, and live API 30 emulator shutdown recovery. Mocked lifecycle/cache tests and local terminal checks cover other paths; an official release download was checked for integrity, extraction, cache reuse, and cleanup. | Physical devices, additional `--shell` and root-manager combinations, and native Windows terminals. |
 | Environment initialization and Frida package sync | Mocked venv/pip, dependency repair/failure, platform conditions, version selection, relaunch, and cancellation checks. On macOS, existing-venv initialization passed both inside and outside the venv; a real outside-venv relaunch preserved arguments and working directory without installing packages. | Fresh-environment installation and real package transitions on supported macOS, Linux, and Windows hosts; native Windows relaunch. |
 
 **Android 14 and later are outside this fork's current verified scope.** An SDK

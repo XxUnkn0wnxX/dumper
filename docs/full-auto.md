@@ -3,7 +3,7 @@
 [← Back to the Dumper README](../README.md) · [🧱 Python setup](setup.md) · [🧩 Dumper operation](dumper.md) · [🧰 Frida setup](frida-setup.md)
 
 `full_auto.py` is an experimental controller for one Frida setup and one
-automatic dumper capture. It is intended for a rooted Android 9–13 target
+automatic dumper capture. It is intended for an Android 9–13 target with root access
 (API 28–33) that is already authorized, fully booted, and ready for playback.
 The API range is a gate, not a compatibility claim: a run still needs a
 successful automatic `PrepareKeyRequest` signature hook before capture can
@@ -143,12 +143,13 @@ diagnosis.
 
 ## Platform scope
 
-The user confirmed capture testing through **Android 13 / API 33** on
-2026-09-20; the overall tested range is Android 9–13 / API 28–33. See the
+The user confirmed emulator capture testing through **Android 13 / API 33** on
+2026-09-20; the overall tested range is Android 9–13 / API 28–33. All live testing
+used Android Studio emulators; physical phones remain untested. See the
 [verified-scope record](testing.md#verified-scope) for the evidence and limits.
 
 For full auto specifically, earlier session logs plus independent file parsing
 and key matching verified a complete pair and cleanup on Android 12 / API 31
-x86_64 with Frida 17.18.0 and CDM 16.1.0. Local tests also cover POSIX background
-supervision. Native Windows supervision remains mocked, and the general capture
+x86_64 in an emulator with Frida 17.18.0 and CDM 16.1.0. Local tests also cover
+POSIX background supervision. Native Windows supervision remains mocked, and the general capture
 confirmation does not establish every host, device, or cancellation scenario.
