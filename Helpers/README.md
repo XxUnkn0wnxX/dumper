@@ -10,11 +10,16 @@ For regeneration arguments, runtime compatibility, schema provenance, and the
 historical source archives, read the [Protobuf guide](../docs/protobuf.md).
 Do not edit the generated Python file by hand.
 
+WVD generation is a focused exception to the shared main-venv behavior:
+`tools/generate_wvd.py` requires the strict `.venv-wvd` bootstrap described in
+the [WVD environment boundary](../docs/wvd.md#environment-boundary).
+
 Shared Python CLI support also lives here:
 
 | Module | Purpose | Guide |
 | --- | --- | --- |
 | [`Bootstrap.py`](Bootstrap.py) | Initialize and enter the project venv when a CLI is launched outside any venv. | [Python setup](../docs/setup.md#automatic-environment-setup) |
+| [`WvdBootstrap.py`](WvdBootstrap.py) | Check and enter the dedicated `.venv-wvd` using shared initialization. | [WVD setup](../docs/wvd.md#environment-boundary) |
 | [`CLI.py`](CLI.py) | Repair terminal flags and protect cancellation cleanup. | [Cancellation behavior](../docs/frida-setup.md#cancellation-and-cleanup) |
 | [`AutoInit.py`](AutoInit.py) | Run shared initialization in full auto's background initialization stage. | [Full auto](../docs/full-auto.md) |
 | [`AutoProcesses.py`](AutoProcesses.py) | Own and stop background child processes, including Windows Job Objects. | [Full auto](../docs/full-auto.md) |

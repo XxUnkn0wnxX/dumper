@@ -10,7 +10,7 @@ has one owner:
 | Android image, ADB, root, and authorization | [Android setup](../docs/android-setup.md) |
 | `setup_frida.py` installation, shell mode, cache, arguments, cleanup, and Ctrl+C | [Frida server setup](../docs/frida-setup.md) |
 | `regenerate_protobuf.py`, schema, runtime pin, and provenance | [Protobuf guide](../docs/protobuf.md) |
-| Optional `pywidevine` environment | [WVD tooling](../docs/wvd.md) |
+| `generate_wvd.py`, pair validation, and WVD replacement | [WVD generation](../docs/wvd.md) |
 | Experimental background controller | [Full-auto workflow](../docs/full-auto.md) |
 | Regression commands and verified scope | [Testing guide](../docs/testing.md) |
 

@@ -56,7 +56,7 @@ python3 init.py
 On Windows, run `py -3 init.py`. You can rerun this command whenever you want
 to check or repair the selected environment's main requirements.
 
-The dumper, `full_auto.py`, and both Python tools share
+The dumper, `full_auto.py`, `setup_frida.py`, and `regenerate_protobuf.py` share
 [`Helpers/Bootstrap.py`](../Helpers/Bootstrap.py) with `init.py`. As a fallback
 for a skipped initialization step, when started **outside a
 virtual environment**, they create or reuse the repository's `.venv`, install
@@ -73,6 +73,12 @@ On Windows, use `py -3 tools\setup_frida.py` and `py -3 dump_keys.py`.
 The protobuf tool uses the same initialization path. `--help` shows help without
 creating an environment or installing packages. Python itself must already be
 installed; on Linux, the Python `venv` support package may also be needed.
+
+Automatic setup uses the running Python interpreter to create the environment
+and detects the OS when selecting its executable: `bin/python` on macOS/Linux
+or `Scripts\python.exe` on Windows. Shell activation is unnecessary. The
+[WVD helper](wvd.md) uses the same platform handling with its separate
+`.venv-wvd` environment.
 
 [`init.py`](../init.py) uses the same shared
 helper, installs missing or mismatched main requirements in the selected venv,
@@ -185,5 +191,8 @@ Optional `pywidevine` tooling has its own
 [requirements-wvd.txt](../requirements-wvd.txt) and needs a **separate
 `.venv-wvd` environment** because its Protobuf requirements conflict with the
 dumper's. Do not install both requirements files into one environment or bypass
-dependency checks with `--no-deps`. See [WVD tooling](wvd.md) for its pinned
-environment table and commands.
+dependency checks with `--no-deps`. The WVD helper is a focused exception to
+the main CLI environment behavior: outside a real venv it bootstraps strict
+`.venv-wvd`, while an active main or custom venv is refused before package or
+data operations. See the [WVD environment boundary](wvd.md#environment-boundary)
+and its pinned environment commands.

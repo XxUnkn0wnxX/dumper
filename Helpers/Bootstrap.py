@@ -4,7 +4,8 @@ Normal command entry points call :func:`bootstrap` before importing optional
 dependencies.  It relaunches an interpreter started outside a virtual
 environment through this repository's ``.venv``.  An already-active real venv
 is deliberately left alone: it may be a maintained environment with a
-different name or location.
+different name or location.  Optional tools with incompatible dependencies use
+the dedicated helpers below, which deliberately require their own fixed venv.
 
 ``init.py`` uses :func:`initialize_environment` directly.  That explicit setup
 command validates the active venv when there is one, otherwise the repository
@@ -187,13 +188,14 @@ def _run_command(command: Sequence[str], purpose: str, *, timeout: int,
     return result
 
 
-def _read_requirements() -> RootRequirements:
-    """Read only approved root package syntax and wheel-selection metadata."""
-    requirements_file = _requirements_path()
+def _read_requirements(requirements_file: Path | None = None, *, requirements_label: str = 'root') -> RootRequirements:
+    """Read only approved package syntax and wheel-selection metadata."""
+    if requirements_file is None:
+        requirements_file = _requirements_path()
     try:
         lines = requirements_file.read_text(encoding='utf-8').splitlines()
     except OSError as error:
-        raise BootstrapError(f'Cannot read root requirements file {requirements_file}: {error}') from error
+        raise BootstrapError(f'Cannot read {requirements_label} requirements file {requirements_file}: {error}') from error
 
     requirements: list[Requirement] = []
     pip_options: list[str] = []
@@ -237,7 +239,8 @@ def _read_requirements() -> RootRequirements:
         seen.add(requirement.normalized_name)
         requirements.append(requirement)
     if not requirements:
-        raise BootstrapError(f'Root requirements file {requirements_file} has no installable packages.')
+        label = f'{requirements_label[:1].upper()}{requirements_label[1:]}'
+        raise BootstrapError(f'{label} requirements file {requirements_file} has no installable packages.')
     return RootRequirements(tuple(requirements), tuple(pip_options))
 
 
@@ -264,7 +267,8 @@ def _pip_environment() -> dict[str, str]:
     return environment
 
 
-def _fresh_venv_report(python: Path, *, expected_prefix: Path | None) -> None:
+def _fresh_venv_report(python: Path, *, expected_prefix: Path | None,
+                       environment_description: str = 'Repository virtual environment') -> None:
     """Prove a selected interpreter starts in a real venv in isolated mode."""
     script = (
         'import json, sys\n'
@@ -303,11 +307,13 @@ def _fresh_venv_report(python: Path, *, expected_prefix: Path | None) -> None:
             actual = Path(prefix).resolve()
             expected = expected_prefix.resolve()
         except OSError as error:
-            raise BootstrapError(f'Could not resolve repository virtual-environment prefix: {error}') from error
+            raise BootstrapError(
+                f'Could not resolve {environment_description.lower()} prefix: {error}'
+            ) from error
         if actual != expected:
             raise BootstrapError(
-                f'Repository virtual environment {expected_prefix} uses an interpreter whose sys.prefix is {prefix}; '
-                'it was not changed. Repair or recreate that .venv manually.'
+                f'{environment_description} {expected_prefix} uses an interpreter whose sys.prefix is {prefix}; '
+                f'it was not changed. Repair or recreate that {expected_prefix.name} manually.'
             )
 
 
@@ -481,8 +487,9 @@ def _clean_temporary_requirements(temporary: tempfile.TemporaryDirectory,
 
 
 def _preflight_and_install_requirements(python: Path, root: RootRequirements, *, context: str,
-                                        target_machine: str) -> None:
+                                        target_machine: str, requirements_label: str = 'root') -> None:
     """Prove a full pinned request resolves before changing the selected venv."""
+    requirements_heading = f'{requirements_label[:1].upper()}{requirements_label[1:]} requirements'
     environment = _pip_environment()
     installed = _installed_distributions(python)
     requested = _complete_requested_requirements(root, installed, target_machine=target_machine)
@@ -500,16 +507,16 @@ def _preflight_and_install_requirements(python: Path, root: RootRequirements, *,
         print(f'Preflighting the complete requested dependency set for {context}...', flush=True)
         _run_command(
             _pip_install_command(python, requirements_file, dry_run=True),
-            f'Preflighting root requirements for {context}',
+            f'Preflighting {requirements_label} requirements for {context}',
             timeout=PIP_INSTALL_TIMEOUT,
             environment=environment,
             capture_output=False,
         )
-        print(f'Installing preflighted root requirements into {context}...', flush=True)
+        print(f'Installing preflighted {requirements_label} requirements into {context}...', flush=True)
         installation_started = True
         _run_command(
             _pip_install_command(python, requirements_file, dry_run=False),
-            f'Installing root requirements into {context}',
+            f'Installing {requirements_label} requirements into {context}',
             timeout=PIP_INSTALL_TIMEOUT,
             environment=environment,
             capture_output=False,
@@ -528,11 +535,11 @@ def _preflight_and_install_requirements(python: Path, root: RootRequirements, *,
             _clean_temporary_requirements(temporary, context=context)
         if installation_started:
             raise BootstrapError(
-                f'Root requirements installation for {context} did not complete; '
+                f'{requirements_heading} installation for {context} did not complete; '
                 f'the virtual environment may be partially changed. {error}'
             ) from error
         raise BootstrapError(
-            f'Root requirements for {context} were not changed because dependency preflight failed. {error}'
+            f'{requirements_heading} for {context} were not changed because dependency preflight failed. {error}'
         ) from error
     except OSError as error:
         with defer_interrupts():
@@ -562,7 +569,8 @@ def _owns_creation(venv: Path, marker: Path, token: str) -> bool:
         return False
 
 
-def _cleanup_owned_creation(venv: Path, marker: Path, token: str) -> bool:
+def _cleanup_owned_creation(venv: Path, marker: Path, token: str, *,
+                            environment_description: str = 'repository virtual environment') -> bool:
     """Remove only the directory atomically claimed by this invocation."""
     if not _owns_creation(venv, marker, token):
         return False
@@ -570,7 +578,7 @@ def _cleanup_owned_creation(venv: Path, marker: Path, token: str) -> bool:
         shutil.rmtree(venv)
     except OSError as error:
         print(
-            f'Warning: incomplete repository virtual environment remains at {venv}: {error}. '
+            f'Warning: incomplete {environment_description} remains at {venv}: {error}. '
             'Repair or remove it manually before retrying.',
             file=sys.stderr,
         )
@@ -578,38 +586,42 @@ def _cleanup_owned_creation(venv: Path, marker: Path, token: str) -> bool:
     return True
 
 
-def _create_repository_venv(venv: Path) -> None:
-    """Create one absent repository .venv and clean only our interrupted work."""
+def _create_repository_venv(venv: Path, *,
+                            environment_description: str = 'Repository virtual environment') -> None:
+    """Create one absent repository environment and clean only our interrupted work."""
+    lower_description = environment_description[:1].lower() + environment_description[1:]
     try:
         venv.mkdir()
     except FileExistsError:
         raise BootstrapError(
-            f'Repository virtual environment {venv} appeared during initialization. '
+            f'{environment_description} {venv} appeared during initialization. '
             'It was not changed; rerun after the other setup process finishes.'
         ) from None
     except OSError as error:
-        raise BootstrapError(f'Cannot create repository virtual-environment directory {venv}: {error}') from error
+        raise BootstrapError(f'Cannot create {lower_description} directory {venv}: {error}') from error
 
     marker, token = _ownership_marker(venv)
     try:
         marker.write_text(token, encoding='ascii')
     except OSError as error:
         raise BootstrapError(
-            f'Created repository virtual-environment directory {venv}, but could not claim it for safe cleanup: {error}. '
+            f'Created {lower_description} directory {venv}, but could not claim it for safe cleanup: {error}. '
             'It was left in place; repair or remove it manually before retrying.'
         ) from error
 
-    print(f'Creating repository virtual environment at {venv}...', flush=True)
+    print(f'Creating {lower_description} at {venv}...', flush=True)
     try:
         _run_command(
             [sys.executable, '-I', '-m', 'venv', str(venv)],
-            f'Creating repository virtual environment at {venv}',
+            f'Creating {lower_description} at {venv}',
             timeout=VENV_TIMEOUT,
             capture_output=False,
         )
     except KeyboardInterrupt:
         with ignore_interrupts():
-            removed = _cleanup_owned_creation(venv, marker, token)
+            removed = _cleanup_owned_creation(
+                venv, marker, token, environment_description=lower_description,
+            )
             if removed:
                 print(
                     f'\nVirtual-environment creation was cancelled; removed the incomplete {venv}.',
@@ -625,10 +637,12 @@ def _create_repository_venv(venv: Path) -> None:
         # A new Ctrl+C during error cleanup should be delivered after the
         # bounded cleanup finishes instead of leaving a half-created venv.
         with defer_interrupts():
-            removed = _cleanup_owned_creation(venv, marker, token)
+            removed = _cleanup_owned_creation(
+                venv, marker, token, environment_description=lower_description,
+            )
         state = 'was removed' if removed else 'was left for manual repair'
         raise BootstrapError(
-            f'Repository virtual-environment creation did not complete; {venv} {state}. {error}'
+            f'{environment_description} creation did not complete; {venv} {state}. {error}'
         ) from error
     finally:
         # A completed venv does not need the private ownership marker. A failed
@@ -640,56 +654,132 @@ def _create_repository_venv(venv: Path) -> None:
                 pass
 
 
-def _repository_python() -> tuple[Path, bool]:
-    """Return the verified repository interpreter and whether this run made it."""
-    venv = _repository_venv()
+def _environment_python(venv: Path, *, environment_description: str,
+                        reject_system_site_packages: bool = False) -> tuple[Path, bool]:
+    """Return one verified repository-local interpreter and whether this run made it."""
     created = False
     if venv.exists() or venv.is_symlink():
         if venv.is_symlink() or not venv.is_dir():
             raise BootstrapError(
-                f'Repository virtual environment path {venv} is not a normal directory. '
+                f'{environment_description} path {venv} is not a normal directory. '
                 'It was not changed; repair or recreate it manually.'
             )
-        print(f'Reusing repository virtual environment at {venv}.', flush=True)
+        print(f'Reusing {environment_description.lower()} at {venv}.', flush=True)
     else:
-        _create_repository_venv(venv)
+        _create_repository_venv(venv, environment_description=environment_description)
         created = True
 
+    if reject_system_site_packages:
+        _reject_system_site_packages(venv, environment_description=environment_description)
     python = _venv_python(venv)
     if not python.is_file():
         raise BootstrapError(
-            f'Repository virtual environment {venv} is missing {python.relative_to(venv)}. '
+            f'{environment_description} {venv} is missing {python.relative_to(venv)}. '
             'It was not changed; repair or recreate it manually.'
         )
-    _fresh_venv_report(python, expected_prefix=venv)
+    _fresh_venv_report(
+        python, expected_prefix=venv, environment_description=environment_description,
+    )
     return python, created
 
 
-def initialize_environment() -> Path:
-    """Initialize/check the selected venv and return its interpreter path.
+def _repository_python() -> tuple[Path, bool]:
+    """Return the verified repository interpreter and whether this run made it."""
+    return _environment_python(
+        _repository_venv(), environment_description='Repository virtual environment',
+    )
 
-    Active real environments are selected exactly as supplied, including a
-    differently named venv.  Without one, this initializes the fixed
-    repository ``.venv``.  It never falls back to global pip.
-    """
-    root_requirements = _read_requirements()
+
+def _reject_system_site_packages(venv: Path, *, environment_description: str) -> None:
+    """Reject a dedicated venv which can import packages from its base Python."""
+    config = venv / 'pyvenv.cfg'
+    if not config.exists():
+        return
+    if not config.is_file() or config.is_symlink():
+        raise BootstrapError(
+            f'{environment_description} has an unsafe pyvenv.cfg path at {config}; '
+            'it was not changed. Repair or recreate it manually.'
+        )
+    try:
+        lines = config.read_text(encoding='utf-8').splitlines()
+    except OSError as error:
+        raise BootstrapError(
+            f'Cannot read {environment_description.lower()} configuration {config}: {error}'
+        ) from error
+    for line in lines:
+        key, separator, value = line.partition('=')
+        if separator and key.strip().casefold() == 'include-system-site-packages' and value.strip().casefold() == 'true':
+            raise BootstrapError(
+                f'{environment_description} {venv} enables include-system-site-packages=true. '
+                'It was not changed; recreate the dedicated environment without system site packages.'
+            )
+
+
+def _dedicated_venv_path(venv_name: str) -> Path:
+    """Return a fixed direct child of the repository root."""
+    if not isinstance(venv_name, str) or not re.fullmatch(r'\.?[A-Za-z0-9][A-Za-z0-9._-]*', venv_name):
+        raise BootstrapError(
+            f'Invalid dedicated virtual-environment name {venv_name!r}; use one simple repository-local directory name.'
+        )
+    return ROOT / venv_name
+
+
+def _dedicated_requirements_path(requirements_file: Path) -> Path:
+    """Accept a requirements file only from this repository."""
+    path = Path(requirements_file)
+    if not path.is_absolute():
+        path = ROOT / path
+    try:
+        path.resolve().relative_to(ROOT.resolve())
+    except OSError as error:
+        raise BootstrapError(f'Could not resolve dedicated requirements file {path}: {error}') from error
+    except ValueError as error:
+        raise BootstrapError(
+            f'Dedicated requirements file {path} must remain inside repository root {ROOT}.'
+        ) from error
+    return path
+
+
+def _active_dedicated_python(venv: Path, *, environment_description: str) -> Path:
+    """Verify that this real venv is the one dedicated environment we permit."""
+    if venv.is_symlink():
+        raise BootstrapError(
+            f'{environment_description} path {venv} is a symlink. '
+            'It was not changed; recreate the dedicated environment as a normal directory.'
+        )
+    try:
+        active_prefix = Path(sys.prefix).resolve()
+        expected_prefix = venv.resolve()
+    except OSError as error:
+        raise BootstrapError(
+            f'Could not resolve the active or dedicated virtual-environment prefix: {error}'
+        ) from error
+    if active_prefix != expected_prefix:
+        raise BootstrapError(
+            f'WVD tooling requires the dedicated virtual environment {venv}, but this interpreter uses {sys.prefix}. '
+            f'Deactivate the current environment and rerun this command, or invoke {_venv_python(venv)} directly.'
+        )
+    if not venv.is_dir():
+        raise BootstrapError(
+            f'{environment_description} path {venv} is not a normal directory. '
+            'It was not changed; repair or recreate it manually.'
+        )
+    _reject_system_site_packages(venv, environment_description=environment_description)
+    python = Path(sys.executable)
+    _fresh_venv_report(
+        python, expected_prefix=venv, environment_description=environment_description,
+    )
+    return python
+
+
+def _check_and_repair_requirements(python: Path, root_requirements: RootRequirements, *,
+                                   context: str, report_missing_adb: bool = False,
+                                   requirements_label: str = 'root') -> None:
+    """Check one declared requirement set and make at most one safe repair."""
+    requirements_heading = f'{requirements_label[:1].upper()}{requirements_label[1:]} requirements'
     requirements = root_requirements.requirements
-    if running_in_virtual_environment():
-        python = Path(sys.executable)
-        context = f'active virtual environment {sys.prefix}'
-        print(f'Using {context}.', flush=True)
-        _fresh_venv_report(python, expected_prefix=None)
-    else:
-        # A missing repository environment necessarily needs the fixed
-        # requirements installation below. Reject unsafe pip routing before
-        # creating even its empty directory, leaving no partial state behind.
-        if not _repository_venv().exists() and not _repository_venv().is_symlink():
-            _pip_environment()
-        python, _created = _repository_python()
-        context = f'repository virtual environment {_repository_venv()}'
-
     installed, target_machine = _installed_requirements(python, requirements)
-    if any(
+    if report_missing_adb and any(
         requirement.normalized_name == 'adbutils' and installed.get(requirement.name) is False
         for requirement in requirements
     ) and shutil.which('adb') is None:
@@ -711,24 +801,92 @@ def initialize_environment() -> Path:
             needs_repair = True
             print('Installed packages failed pip check; preflighting dependency repair...', flush=True)
     if needs_repair:
-        # Do not let an interrupted frida install's ordinary pip-check failure
-        # block its own repair. The full dry-run below keeps every non-root
-        # installed package exact and refuses resolver conflicts before mutation.
+        # Do not let an interrupted install's ordinary pip-check failure block
+        # its own repair. The full dry-run keeps every non-root installed
+        # package exact and refuses resolver conflicts before mutation.
         _preflight_and_install_requirements(
             python, root_requirements, context=context, target_machine=target_machine,
+            requirements_label=requirements_label,
         )
         installed, _target_machine = _installed_requirements(python, requirements)
         missing = _missing_or_wrong_requirements(requirements, installed)
         if missing:
             raise BootstrapError(
-                f'Installing root requirements into {context} completed, but these requirements are still missing or wrong: '
+                f'Installing {requirements_label} requirements into {context} completed, but these requirements are still missing or wrong: '
                 f'{", ".join(missing)}.'
             )
         # Only one repair is attempted. A failed final check stops here.
         _pip_check(python, context=context, environment=_pip_environment())
     else:
-        print(f'Root requirements already satisfy {context}; no package installation is needed.', flush=True)
+        print(f'{requirements_heading} already satisfy {context}; no package installation is needed.', flush=True)
 
+
+def initialize_environment() -> Path:
+    """Initialize/check the selected venv and return its interpreter path.
+
+    Active real environments are selected exactly as supplied, including a
+    differently named venv.  Without one, this initializes the fixed
+    repository ``.venv``.  It never falls back to global pip.
+    """
+    root_requirements = _read_requirements()
+    if running_in_virtual_environment():
+        python = Path(sys.executable)
+        context = f'active virtual environment {sys.prefix}'
+        print(f'Using {context}.', flush=True)
+        _fresh_venv_report(python, expected_prefix=None)
+    else:
+        # A missing repository environment necessarily needs the fixed
+        # requirements installation below. Reject unsafe pip routing before
+        # creating even its empty directory, leaving no partial state behind.
+        if not _repository_venv().exists() and not _repository_venv().is_symlink():
+            _pip_environment()
+        python, _created = _repository_python()
+        context = f'repository virtual environment {_repository_venv()}'
+
+    _check_and_repair_requirements(
+        python, root_requirements, context=context, report_missing_adb=True,
+    )
+
+    print(f'Virtual environment ready: {python}.', flush=True)
+    return python
+
+
+def initialize_dedicated_environment(*, venv_name: str, requirements_file: Path) -> Path:
+    """Check or create one fixed repository-local environment for incompatible tooling.
+
+    A real active venv is accepted only when its actual ``sys.prefix`` equals
+    the dedicated directory.  ``VIRTUAL_ENV`` is intentionally not considered:
+    activation variables are shell hints and can be stale.
+    """
+    venv = _dedicated_venv_path(venv_name)
+    requirements_path = _dedicated_requirements_path(requirements_file)
+    environment_description = 'Dedicated WVD virtual environment'
+    context = f'dedicated WVD virtual environment {venv}'
+
+    if running_in_virtual_environment():
+        # Do this before reading requirements or invoking pip: a caller in the
+        # main .venv (or any custom venv) must never receive WVD packages.
+        python = _active_dedicated_python(venv, environment_description=environment_description)
+        root_requirements = _read_requirements(
+            requirements_path, requirements_label='dedicated WVD',
+        )
+    else:
+        # As with the main environment, validate the project request and pip
+        # routing before creating even an empty directory.
+        root_requirements = _read_requirements(
+            requirements_path, requirements_label='dedicated WVD',
+        )
+        if not venv.exists() and not venv.is_symlink():
+            _pip_environment()
+        python, _created = _environment_python(
+            venv,
+            environment_description=environment_description,
+            reject_system_site_packages=True,
+        )
+
+    _check_and_repair_requirements(
+        python, root_requirements, context=context, requirements_label='WVD',
+    )
     print(f'Virtual environment ready: {python}.', flush=True)
     return python
 
@@ -813,4 +971,31 @@ def bootstrap(entrypoint: Path, argv: Sequence[str] | None = None) -> None:
     if not script.is_file():
         raise BootstrapError(f'Bootstrap entry point is not a file: {script}')
     python = initialize_environment()
+    _relaunch(python, script, arguments)
+
+
+def bootstrap_dedicated(entrypoint: Path, *, venv_name: str, requirements_file: Path,
+                        argv: Sequence[str] | None = None) -> None:
+    """Check/relaunch a CLI that is allowed only in one dedicated venv.
+
+    Help is intentionally a no-op so command usage stays available without
+    creating a virtual environment, invoking pip, or importing optional tool
+    dependencies.
+    """
+    arguments = tuple(sys.argv[1:] if argv is None else argv)
+    if _help_requested(arguments):
+        return
+    active = running_in_virtual_environment()
+    if not active:
+        script = Path(entrypoint).resolve()
+        if not script.is_file():
+            raise BootstrapError(f'Bootstrap entry point is not a file: {script}')
+    else:
+        script = Path(entrypoint).resolve()
+
+    python = initialize_dedicated_environment(
+        venv_name=venv_name, requirements_file=requirements_file,
+    )
+    if active:
+        return
     _relaunch(python, script, arguments)

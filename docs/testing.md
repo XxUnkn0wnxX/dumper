@@ -49,7 +49,14 @@ regeneration checks are documented in the [protobuf guide](protobuf.md).
 .venv/bin/python -m unittest tests.test_bootstrap tests.test_frida_host_sync -v
 .venv/bin/python -m unittest tests.test_init tests.test_bootstrap_entrypoints -v
 .venv/bin/python -m unittest tests.test_full_auto tests.test_auto_processes tests.test_auto_session tests.test_auto_logging tests.test_auto_init tests.test_auto_frida -v
+.venv-wvd/bin/python -m unittest tests.test_generate_wvd -v
+.venv/bin/python -m unittest tests.test_wvd_bootstrap -v
 ```
+
+The WVD generator tests run under `.venv-wvd` because they exercise the pinned
+`pywidevine` dependency. The bootstrap-boundary tests run under the ordinary
+`.venv`; both groups use synthetic inputs and dependency/process mocks and make
+no live-device or license-validation claim.
 
 Run the JavaScript harness directly when Node.js is installed:
 
@@ -157,6 +164,7 @@ completed. Host-platform and device-specific limits are recorded below.
 | Automatic layout detection | User-confirmed capture range is API 28–33. Detailed earlier examples include Android 9 / API 28 with plain `python dump_keys.py`, `libwvhidl.so`, and `args[4]`, plus the verified API 31 full-auto run using `args[5]`. Offline checks cover 12 library fixtures from eight Android 9–13 SDK packages, including Android 12L. | Additional device/library builds and Android 14+ signatures. |
 | Protobuf | Updated binding exercised by the user-confirmed capture workflow through API 33. Schema and serialization regressions also use synthetic requests from the original Protobuf 3.19.3 binding. | Validation after future schema/compiler/runtime updates. |
 | Capture folders | Live capture with the current layout, including an independently matched pair in `CDM 16.1.0 - API 31`; synthetic tests cover labels, timestamp collisions, and preservation of existing pairs. | Additional host filesystem behavior and failure scenarios. |
+| WVD generation | On macOS with Python 3.14.0 and pywidevine 1.9.0, six saved pairs from API 28–33 converted to Android L3 WVD v2 and passed private-key/client-ID round-trip checks. A rerun replaced the outputs, all source files stayed unchanged, and the main venv package set stayed unchanged. Synthetic tests cover invalid pairs, relative output paths, replacement, and interruption cleanup. | Native Windows/Linux runs and license-service acceptance. |
 | Frida setup helper | User-confirmed setup on Android 9, later verified API 31 full-auto setup with Frida 17.18.0, and live API 30 shutdown recovery. Mocked lifecycle/cache tests and local terminal checks cover other paths; an official release download was checked for integrity, extraction, cache reuse, and cleanup. | Additional `--shell` and root-manager combinations, and native Windows terminals. |
 | Environment initialization and Frida package sync | Mocked venv/pip, dependency repair/failure, platform conditions, version selection, relaunch, and cancellation checks. On macOS, existing-venv initialization passed both inside and outside the venv; a real outside-venv relaunch preserved arguments and working directory without installing packages. | Fresh-environment installation and real package transitions on supported macOS, Linux, and Windows hosts; native Windows relaunch. |
 

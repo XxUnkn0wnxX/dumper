@@ -2,8 +2,8 @@
 
 [← Back to the Dumper README](../README.md) · [🧪 Current evidence](testing.md) · [🧩 Dumper layout guide](dumper.md)
 
-Planned work for newer Android SDK images and a separate WVD creation helper.
-Android 14–17 support is currently unverified.
+Planned work for newer Android SDK images. Android 14–17 support is currently
+unverified. WVD generation is documented in the [WVD guide](wvd.md).
 
 ## Android 14–17 SDK and Widevine inventory
 
@@ -16,12 +16,3 @@ Android 14–17 support is currently unverified.
   signature has been verified.
 - [ ] Add the inspected signatures and their source metadata to the fixtures;
   update detection only where the module evidence supports a new layout.
-
-## Deferred WVD helper
-
-- [ ] Add a helper that converts dumped `client_id.bin` and `private_key.pem`
-  into a `.wvd` file. Use the separate `.venv-wvd` and `requirements-wvd.txt`
-  environment described in the [WVD tooling guide](wvd.md).
-- [ ] Give that helper its own automatic environment initialization and relaunch
-  using the shared bootstrap approach, keeping WVD dependencies separate from
-  the dumper's environment.

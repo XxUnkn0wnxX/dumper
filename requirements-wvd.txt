@@ -1,4 +1,4 @@
-# Optional WVD tooling: install in a separate .venv-wvd environment.
+# WVD generation: tools/generate_wvd.py manages the dedicated .venv-wvd.
 # Do not combine with requirements.txt; the Protobuf requirements conflict.
 # See docs/wvd.md for setup instructions.
-pywidevine
+pywidevine==1.9.0
