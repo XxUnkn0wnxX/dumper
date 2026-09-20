@@ -48,6 +48,7 @@ UNPACKED_LIMIT = 512 * 1024 * 1024
 TIMEOUT = 30
 STOP_TIMEOUT = 10
 STOP_INTERVAL = 0.25
+FOREGROUND_STOP_TIMEOUT = 5
 WINDOWS_CHILD_CLEANUP_TIMEOUT = 5
 VERSION_PATTERN = re.compile(r'v?(\d+\.\d+\.\d+)\Z')
 
@@ -883,11 +884,88 @@ def root_session_command(root_mode: str, command: str, *, interactive: bool) -> 
     return ['shell', remote_quote('sh', '-c', outer_command)]
 
 
+def foreground_process_identity_command() -> str:
+    """Read a child incarnation using Android /proc, without scanning processes.
+
+    Field 22 is the process start time. Remove the parenthesized command name
+    first because it can contain spaces and closing parentheses. PID plus start
+    time prevents shutdown from signalling a new process that reused the PID.
+    """
+    return r'''frida_read_identity() {
+    frida_current_start=
+    if ! IFS= read -r frida_proc_stat 2>/dev/null < "/proc/$frida_pid/stat"; then return; fi
+    frida_proc_stat=${frida_proc_stat##*) }
+    set -- $frida_proc_stat
+    if test "$#" -lt 20; then return; fi
+    case "$1" in Z|X) return ;; esac
+    shift 19
+    case "$1" in ''|*[!0-9]*) return ;; esac
+    frida_current_start=$1
+}'''
+
+
+def supervised_server_command() -> str:
+    """Keep terminal I/O attached while bounding shutdown after Ctrl+C.
+
+    A normal foreground command makes Android mksh defer its INT trap until
+    the command exits. Frida can hang during shutdown with clients attached.
+    Keep job control disabled and use an interruptible shell wait instead: the
+    child retains the terminal's foreground process group and explicit stdin.
+    The terminal already sends INT to the child; do not send a duplicate signal
+    while Frida is entering its shutdown handler.
+    Only this child, with its original /proc start time, can be force-stopped.
+    There is no timer while the server is running normally.
+    """
+    return foreground_process_identity_command() + '\n' + r'''
+frida_pid=
+frida_start=
+frida_ready=0
+frida_interrupted=0
+frida_stopping=0
+frida_forced=0
+frida_stop() {
+    if test "$frida_stopping" -eq 1; then return; fi
+    frida_stopping=1
+    trap '' INT
+    frida_read_identity
+    if test -z "$frida_start" || test "$frida_current_start" != "$frida_start"; then return; fi
+    printf '\nStopping Frida; allowing up to __TIMEOUT__ seconds for shutdown...\n'
+    frida_remaining=__TIMEOUT__
+    while test "$frida_remaining" -gt 0; do
+        frida_read_identity
+        if test "$frida_current_start" != "$frida_start"; then return; fi
+        sleep 1
+        frida_remaining=$((frida_remaining - 1))
+    done
+    frida_read_identity
+    if test "$frida_current_start" = "$frida_start"; then
+        printf 'Frida did not stop within __TIMEOUT__ seconds; force-stopping this session\047s server (PID %s).\n' "$frida_pid" >&2
+        kill -KILL "$frida_pid" 2>/dev/null && frida_forced=1
+    fi
+}
+trap 'frida_interrupted=1; if test "$frida_ready" -eq 1; then frida_stop; fi' INT
+(trap - INT QUIT; exec ./frida-server) <&0 &
+frida_pid=$!
+frida_read_identity
+frida_start=$frida_current_start
+frida_ready=1
+if test "$frida_interrupted" -eq 1; then frida_stop; fi
+wait "$frida_pid"
+frida_status=$?
+if test "$frida_interrupted" -eq 1; then
+    wait "$frida_pid"
+    frida_reaped_status=$?
+    if test "$frida_reaped_status" -ne 127; then frida_status=$frida_reaped_status; fi
+    if test "$frida_forced" -eq 1; then frida_status=130; fi
+fi
+trap - INT
+'''.replace('__TIMEOUT__', str(FOREGROUND_STOP_TIMEOUT))
+
+
 def foreground_server_command(interactive: bool, root_mode: str = 'direct') -> str:
     """Build the remote foreground lifecycle after one final process-free scan."""
     preflight = managed_server_absent_command()
     directory = shlex.quote(REMOTE_DIRECTORY)
-    server = './frida-server'
     # Print from Android, after cd succeeds, so a quiet server still visibly
     # identifies the device, working directory, and command being run.
     launch_line = (
@@ -895,15 +973,14 @@ def foreground_server_command(interactive: bool, root_mode: str = 'direct') -> s
         'frida_device=${frida_device:-android}; '
         "printf '\\n%s:%s # ./frida-server\\n' \"$frida_device\" \"$PWD\""
     )
-    if not interactive:
-        return f'{preflight}; cd {directory} || exit $?; {launch_line}; exec {server}'
-    # The INT trap lets the foreground server receive Ctrl-C while preserving
-    # this root shell long enough to offer its prompt after exit status 0/130.
-    return (
+    command = (
         f'{preflight}; cd {directory} || exit $?; {launch_line}; '
-        "trap ':' INT; "
-        f'{server}; frida_status=$?; '
-        'if test "$frida_status" -eq 0 || test "$frida_status" -eq 130; then '
+        f'{supervised_server_command()}\n'
+    )
+    if not interactive:
+        return command + 'exit "$frida_status"'
+    return command + (
+        'if test "$frida_interrupted" -eq 1 || test "$frida_status" -eq 0 || test "$frida_status" -eq 130; then '
         f'{root_shell_continuation(root_mode)}; fi; '
         'exit "$frida_status"'
     )
@@ -993,12 +1070,14 @@ def run_foreground_server(adb: str, serial: str, root_mode: str, *, interactive:
     argv = [adb, '-s', serial, shell_arguments[0], terminal_mode, shell_arguments[1]]
     if interactive:
         print('Handing terminal to ADB. Frida runs in the foreground; Ctrl+C stops it and opens the root prompt.')
+        print(f'If Frida hangs during shutdown, this session force-stops its server after {FOREGROUND_STOP_TIMEOUT} seconds.')
         if root_mode != 'direct':
             print('Then exit leaves su; exit again closes the ADB shell.')
         else:
             print('ADB is already root; exit closes the ADB shell.')
     else:
         print('Handing terminal to ADB. Frida runs in the foreground until it stops; no follow-up shell.')
+        print(f'Ctrl+C allows {FOREGROUND_STOP_TIMEOUT} seconds for shutdown before force-stopping this session\'s server.')
     handoff_to_adb(argv, 'Running foreground Frida server failed')
 
 

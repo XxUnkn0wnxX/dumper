@@ -24,6 +24,8 @@ and the [archived WKS-KEYS protobuf sources](../archives/wks-keys/README.md).
 and starts `./frida-server` automatically in the **foreground**. Its output stays
 visible in that terminal. Keep the session open while using the dumper; press
 **Ctrl+C** to stop Frida and return to a root shell in `/data/local/tmp`.
+If Frida hangs during shutdown, the helper allows five seconds, then force-stops
+that session's server and returns the prompt.
 Use `--shell` to start the installed binary without downloading a replacement.
 
 Use the helper for repeat test-device setups or to prepare several maintainer
@@ -253,8 +255,13 @@ child behind. The line is a launch indication, not an idle prompt. The server
 has **no startup timeout** and does not use `--daemonize`, so its output and
 startup errors remain visible while ADB waits for it to exit. In the default
 mode and `--shell`, press **Ctrl+C** in this terminal to stop Frida; the real
-root prompt appears only after Frida exits. Native Windows terminal behavior
-remains unverified.
+root prompt appears after Frida exits. If shutdown stalls, the Android shell
+prints a warning and sends `SIGKILL` after five seconds, checking the original
+child PID and process start time before signalling. This fallback applies only
+to the server launched by this helper session. It does not kill the ADB service
+or scan for other processes. The five-second limit starts when you press Ctrl+C;
+normal operation has no runtime limit. Native Windows terminal behavior remains
+unverified.
 Keep that terminal open and run the dumper from a second host terminal:
 
 ```sh
@@ -277,12 +284,15 @@ pwd
 ./frida-server --version
 ```
 
-Expect `0` and `/data/local/tmp` from the first two commands. Enter `./frida-server`
-at that prompt to start it again manually. With the direct or `adb root` route,
+Expect `0` and `/data/local/tmp` from the first two commands. To restart with the
+shutdown safeguard, exit back to the host and run `python tools/setup_frida.py --shell`
+again. Running `./frida-server` directly at the Android prompt also works, but
+bypasses the helper's shutdown safeguard. With the direct or `adb root` route,
 one `exit` returns to the host. With `su-c` or `su-0`, the root prompt is nested
 inside the ordinary ADB shell, so the first `exit` returns to that ADB shell and
 the second `exit` returns to the host. `--no-shell` has no follow-up prompt: ADB
-exits with Frida's status when the foreground server stops.
+exits with Frida's status when the foreground server stops, or status `130` if
+the Ctrl+C fallback had to force-stop it.
 
 Keep the host Python `frida` version matched to the server version. The helper
 reports a mismatch when it can find the installed package; it does not change
@@ -380,6 +390,15 @@ is rechecked immediately before SIGTERM. Setup-command timeouts report the
 failed stage without dumping the generated shell script. An unreadable process
 listing stops setup rather than being treated as proof that no server exists.
 
+Foreground shutdown uses an interruptible Android shell `wait`. A plain
+foreground command makes Android mksh defer its signal trap until the command
+exits, which cannot recover from a stuck Frida shutdown. The helper keeps job
+control disabled and attaches its child to the same foreground terminal process
+group, with inherited input and output. Ctrl+C reaches Frida normally; the shell
+can also enforce the shutdown deadline. No host Python polling or background
+daemon is introduced. The process start-time check uses only that child's
+`/proc/PID/stat`, and skips zombies, unreadable identities, and reused PIDs.
+
 The focused tests use mocked ADB commands and synthetic release/download data.
 The terminal tests use local fake programs and PTYs; they never contact Android.
 They verify that the POSIX ADB handoff keeps the same process identity, that the
@@ -390,6 +409,7 @@ that setup errors return without opening a follow-up shell:
 ```sh
 .venv/bin/python -m unittest discover -s tests -p 'test_frida_setup.py' -v
 .venv/bin/python -m unittest discover -s tests -p 'test_frida_process_scan.py' -v
+.venv/bin/python -m unittest discover -s tests -p 'test_frida_process_identity.py' -v
 .venv/bin/python -m unittest discover -s tests -p 'test_frida_terminal.py' -v
 .venv/bin/python -m unittest discover -s tests -p 'test_readme_docs.py' -v
 ```
@@ -398,7 +418,8 @@ that setup errors return without opening a follow-up shell:
 | --- | --- |
 | [`test_frida_setup.py`](../tests/test_frida_setup.py) | Device selection, root checks, installation, cache integrity, network failures, and cleanup. |
 | [`test_frida_process_scan.py`](../tests/test_frida_process_scan.py) | Batched executable-link scans, exact/deleted path matching, malformed listings, and guards that prevent replacement or launch while a managed server remains. |
-| [`test_frida_terminal.py`](../tests/test_frida_terminal.py) | ADB handoff in the same process, foreground terminal input/output, Ctrl+C, nested `su-c`/`su-0` exits, the remaining shell's directory, and error exit statuses. Skipped on Windows because it uses POSIX PTYs. |
+| [`test_frida_process_identity.py`](../tests/test_frida_process_identity.py) | Android process start-time parsing, command names containing spaces/parentheses, and rejection of unreadable or exited processes. |
+| [`test_frida_terminal.py`](../tests/test_frida_terminal.py) | ADB handoff in the same process, foreground terminal input/output, Ctrl+C, bounded shutdown of an unresponsive server, nested `su-c`/`su-0` exits, the remaining shell's directory, and error exit statuses. Skipped on Windows because it uses POSIX PTYs. |
 | [`test_readme_docs.py`](../tests/test_readme_docs.py) | Local README links, markup, navigation, and command argument tables. |
 
 To include the optional 31-second foreground lifetime test on macOS or Linux:
@@ -410,12 +431,18 @@ FRIDA_TEST_LONG_SESSION=1 .venv/bin/python -m unittest discover -s tests -p 'tes
 The earlier installation/manual-start workflow was reported working on Android
 9 / API 28 on 2026-09-20. A subsequent background-start implementation timed out
 on Android 10 / API 29; it has been replaced with foreground terminal startup.
-The corrected startup and replacement behavior still needs live verification.
-Mocked tests cover these flows, root refusal, startup failures, and selecting only
-the process at the managed executable path. Local POSIX terminal tests also
-exercise Ctrl+C and the following shell for all supported root command forms;
-the complete foreground Frida lifecycle, other Android/root-manager combinations,
-and disconnected-device behavior still need device testing. A separate shell-only
+On Android 11 / API 30 x86_64 with Frida 17.18.0 and `su-0`, a live test on
+2026-09-20 reproduced a server that disconnected the dumper after Ctrl+C but
+stalled during its own shutdown. The bounded fallback was verified to stop it
+after five seconds, return a usable root prompt in `/data/local/tmp`, and
+preserve both shell exits. The dumper logged the server disconnect and exited
+cleanly while ADB remained online. This test used `--shell` and existing capture
+hooks; it did not require a new key dump or reinstall the server.
+Mocked tests cover replacement, root refusal, startup failures, and selecting
+only the process at the managed executable path. Local POSIX terminal tests
+exercise Ctrl+C and the following shell for all supported root command forms.
+Replacement, other Android/root-manager combinations, native Windows terminals,
+and device/ADB loss still need their own live testing. A separate shell-only
 `su-0` handoff check on an Android 10 / API 29 emulator verified the root prompt,
 `/data/local/tmp`, and the two-exit return through the ordinary ADB shell; it did
 not exercise Frida foreground startup or replacement.
@@ -431,6 +458,9 @@ On a test device, verify these paths:
    seconds and confirm the dumper connects from a second host terminal. Press
    Ctrl+C, then check `id -u`, `pwd`, and `./frida-server --version` at the
    resulting prompt; expect root, `/data/local/tmp`, and the selected release.
+   Repeat with the dumper attached: it should report the disconnect and exit.
+   If Frida stalls, allow the five-second fallback to finish and confirm the
+   root prompt still accepts commands.
    With `su-c` or `su-0`, use a second `exit` to close the ordinary ADB shell;
    direct/`adb root` needs one `exit`.
 2. Re-run setup on an idle test device; confirm the server is replaced and starts

@@ -646,7 +646,9 @@ class InstallAndShellTests(unittest.TestCase):
     def test_foreground_command_and_terminal_routing_do_not_daemonize_or_time_out(self):
         interactive = setup.foreground_server_command(True)
         self.assertIn('/proc/[0-9]*', interactive)
-        self.assertIn("trap ':' INT", interactive)
+        self.assertIn("trap 'frida_interrupted=1; if test \"$frida_ready\" -eq 1; then frida_stop; fi' INT", interactive)
+        self.assertIn('(trap - INT QUIT; exec ./frida-server) <&0 &', interactive)
+        self.assertIn('frida_stop()', interactive)
         self.assertIn('exec /system/bin/sh -i', interactive)
         self.assertIn('./frida-server', interactive)
         self.assertNotIn('--daemonize', interactive)

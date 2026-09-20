@@ -37,7 +37,15 @@ FAKE_SERVER = '''import os, signal, sys, time
 def stop(signum, frame):
     print('SERVER_STOPPED', flush=True)
     sys.exit(int(os.environ['FRIDA_TEST_STOP_STATUS']))
-signal.signal(signal.SIGINT, stop)
+if os.environ['FRIDA_TEST_IGNORE_INT'] == '1':
+    def request_stop(signum, frame):
+        # The supervisor must bound cleanup even when a server ignores the
+        # first terminal interrupt. It deliberately stays alive until the
+        # supervisor's same-process identity guard force-stops it.
+        print('SERVER_STOP_REQUESTED', flush=True)
+    signal.signal(signal.SIGINT, request_stop)
+else:
+    signal.signal(signal.SIGINT, stop)
 print('SERVER_STARTED', flush=True)
 if os.environ['FRIDA_TEST_FAIL_START'] == '1':
     sys.exit(7)
@@ -87,7 +95,10 @@ class FridaTerminalTests(unittest.TestCase):
     """Verify terminal ownership, shell continuation, and actual exit statuses."""
 
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory(prefix="frida 'terminal-")
+        setup.TMP_ROOT.mkdir(parents=True, exist_ok=True)
+        temporary = tempfile.TemporaryDirectory(
+            prefix="frida 'terminal-", dir=setup.TMP_ROOT,
+        )
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
         self.server = self.make_program('frida-server', FAKE_SERVER)
@@ -112,7 +123,8 @@ class FridaTerminalTests(unittest.TestCase):
         return executable
 
     def exercise_session(self, root_mode, *, interactive=True, stop_status=0,
-                         fail_start=False, hold_seconds=0.1, shell_only=False):
+                         fail_start=False, hold_seconds=0.1, shell_only=False,
+                         ignore_int=False):
         # The host helper needs terminal streams but no controlling terminal of
         # its own. Use Popen instead of forking the unittest runner; only fake
         # ADB's device-side PTY needs a session leader for Ctrl+C delivery.
@@ -121,6 +133,12 @@ class FridaTerminalTests(unittest.TestCase):
             'import sys; from tools import setup_frida as setup; '
             'setup.REMOTE_DIRECTORY = sys.argv[2]; '
             'setup.REMOTE_SERVER = sys.argv[2] + "/frida-server"; '
+            # macOS has no Android /proc tree. The production command still
+            # gets exercised, while this local identity primitive uses a live
+            # host PID query with the same re-check semantics.
+            'setup.foreground_process_identity_command = lambda: '
+            '\'frida_read_identity() { frida_current_start=$(ps -p "$frida_pid" '
+            '-o lstart= 2>/dev/null); test -n "$frida_current_start"; }\'; '
         )
         if shell_only:
             runner += 'setup.open_device_shell(sys.argv[1], "test-device", sys.argv[3])'
@@ -132,6 +150,7 @@ class FridaTerminalTests(unittest.TestCase):
         environment = os.environ.copy()
         environment['FRIDA_TEST_STOP_STATUS'] = str(stop_status)
         environment['FRIDA_TEST_FAIL_START'] = str(int(fail_start))
+        environment['FRIDA_TEST_IGNORE_INT'] = str(int(ignore_int))
         environment['FRIDA_TEST_SHELL_LAYER'] = 'adb'
         environment['PATH'] = str(self.directory) + os.pathsep + environment.get('PATH', '')
         try:
@@ -180,12 +199,25 @@ class FridaTerminalTests(unittest.TestCase):
                 self.assertIsNone(process.poll(), f'Session ended early: {output!r}')
                 if not shell_only:
                     os.write(terminal, b'\x03')
-                    read_until(b'SERVER_STOPPED')
+                    if ignore_int:
+                        read_until(b'SERVER_STOP_REQUESTED', timeout=8)
+                    else:
+                        read_until(b'SERVER_STOPPED')
                 if interactive:
                     # Verify the resulting shell by executing a command instead
                     # of assuming a Bash/mksh-specific prompt string.
                     os.write(terminal, b'printf "CWD=%s\\n" "$PWD"\n')
                     read_until(b'CWD=' + str(self.directory).encode())
+                    if ignore_int:
+                        # The fallback warning must be emitted before the
+                        # returned prompt accepts this first command. The
+                        # startup banner contains "force-stops"; assert the
+                        # actual supervisor warning's exact wording instead.
+                        lower_output = bytes(output).lower()
+                        warning = b"force-stopping this session"
+                        cwd_marker = b'cwd=' + str(self.directory).encode().lower()
+                        self.assertIn(warning, lower_output)
+                        self.assertLess(lower_output.index(warning), lower_output.index(cwd_marker))
                     if root_mode != 'direct':
                         os.write(terminal, b'printf "ROOT_LAYER=%s\\n" "$FRIDA_TEST_SHELL_LAYER"\n')
                         read_until(b'ROOT_LAYER=root')
@@ -220,7 +252,7 @@ class FridaTerminalTests(unittest.TestCase):
                 # ADB; never signal a real adb or frida-server process.
                 try:
                     os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
+                except (ProcessLookupError, PermissionError):
                     pass
                 process.wait(timeout=5)
 
@@ -232,13 +264,21 @@ class FridaTerminalTests(unittest.TestCase):
     def test_remote_interrupt_status_also_returns_to_shell(self):
         self.exercise_session('su-c', stop_status=130)
 
+    def test_unresponsive_server_is_force_stopped_before_root_shell(self):
+        # The fake server acknowledges Ctrl+C but deliberately remains alive.
+        # The remote supervisor must bound the wait, report its fallback, and
+        # still return to the same root/ADB shell sequence.
+        self.exercise_session('su-c', ignore_int=True)
+
     def test_shell_only_handoff_and_exit_for_each_root_command(self):
         for root_mode in ('direct', 'su-c', 'su-0'):
             with self.subTest(root_mode=root_mode):
                 self.exercise_session(root_mode, shell_only=True)
 
     def test_no_shell_returns_server_interrupt_status(self):
-        self.exercise_session('direct', interactive=False, stop_status=130)
+        for root_mode in ('direct', 'su-c', 'su-0'):
+            with self.subTest(root_mode=root_mode):
+                self.exercise_session(root_mode, interactive=False, stop_status=130)
 
     def test_startup_failure_propagates_without_opening_shell(self):
         for interactive in (True, False):
