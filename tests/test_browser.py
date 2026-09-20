@@ -83,6 +83,9 @@ class BrowserHelperTests(unittest.TestCase):
             site_file=site_file or self.site_file,
         )
 
+    def close(self, device_id='emulator-5554'):
+        return browser.close_test_browser(device_id, self.logger)
+
     def test_site_parser_requires_one_valid_active_url_and_preserves_fragment(self):
         self.site_file.write_text(
             '\ufeff# comment\n\nhttps://example.test/path#keep-this-fragment\n',
@@ -306,6 +309,86 @@ class BrowserHelperTests(unittest.TestCase):
                 mock.patch.object(browser.subprocess, 'run', side_effect=KeyboardInterrupt):
             with self.assertRaises(KeyboardInterrupt):
                 self.launch()
+
+    def test_failed_prelaunch_chrome_stop_prevents_relaunch(self):
+        def cannot_stop(command, **kwargs):
+            result = self.run_command(command, **kwargs)
+            if command[1:] == ['-s', 'emulator-5554', 'shell', 'am force-stop com.android.chrome']:
+                return self.result('SecurityException: stop denied\n', returncode=1)
+            return result
+
+        with mock.patch.object(browser, 'resolve_adb', return_value='/adb'), \
+                mock.patch.object(browser.subprocess, 'run', side_effect=cannot_stop):
+            self.assertFalse(self.launch())
+        remotes = [command[4] for command, _kwargs in self.calls if len(command) > 4]
+        self.assertEqual(remotes[-1], 'am force-stop com.android.chrome')
+        self.assertFalse(any(command.startswith('am start ') for command in remotes))
+        self.logger.warning.assert_called_once()
+
+    def test_close_uses_exact_selected_serial_and_one_remote_command(self):
+        with mock.patch.object(browser, 'resolve_adb', return_value='/adb'), \
+                mock.patch.object(browser.subprocess, 'run', side_effect=self.run_command):
+            self.assertTrue(self.close())
+
+        self.assertEqual(len(self.calls), 1)
+        command, kwargs = self.calls[0]
+        self.assertEqual(
+            command,
+            ['/adb', '-s', 'emulator-5554', 'shell', 'am force-stop com.android.chrome'],
+        )
+        self.assertFalse(kwargs['shell'])
+        self.assertEqual(kwargs['timeout'], 5)
+
+    def test_close_does_not_read_flags_or_change_chrome_data(self):
+        with mock.patch.object(browser, 'resolve_adb', return_value='/adb'), \
+                mock.patch.object(browser.subprocess, 'run', side_effect=self.run_command):
+            self.assertTrue(self.close())
+
+        remote = self.calls[0][0][4]
+        self.assertEqual(remote, 'am force-stop com.android.chrome')
+        self.assertNotIn(browser.CHROME_FLAGS_PATH, remote)
+        self.assertNotIn('pm clear', remote)
+        self.assertNotIn('set-debug-app', remote)
+
+    def test_close_missing_adb_is_nonfatal(self):
+        with mock.patch.object(browser, 'resolve_adb', side_effect=browser.SetupError('adb missing')), \
+                mock.patch.object(browser.subprocess, 'run') as run:
+            self.assertFalse(self.close())
+
+        run.assert_not_called()
+        self.logger.warning.assert_called_once()
+        self.assertIn('Capture files are retained', self.logger.warning.call_args.args[0])
+
+    def test_close_offline_nonzero_and_error_marker_are_nonfatal(self):
+        results = (
+            self.result('error: device offline\n', returncode=1),
+            self.result('Error: failed to stop package\n'),
+        )
+        for result in results:
+            with self.subTest(result=result):
+                with mock.patch.object(browser, 'resolve_adb', return_value='/adb'), \
+                        mock.patch.object(browser.subprocess, 'run', return_value=result):
+                    self.assertFalse(self.close())
+
+    def test_close_timeout_is_nonfatal(self):
+        with mock.patch.object(browser, 'resolve_adb', return_value='/adb'), \
+                mock.patch.object(browser.subprocess, 'run', side_effect=subprocess.TimeoutExpired('/adb', 5)):
+            self.assertFalse(self.close())
+
+    def test_close_rejects_invalid_id_before_resolving_adb(self):
+        for device_id in ('', None, 123):
+            with self.subTest(device_id=device_id), \
+                    mock.patch.object(browser, 'resolve_adb') as resolve, \
+                    mock.patch.object(browser.subprocess, 'run') as run:
+                self.assertFalse(self.close(device_id))
+            resolve.assert_not_called()
+            run.assert_not_called()
+
+    def test_close_keyboard_interrupt_is_not_swallowed(self):
+        with mock.patch.object(browser, 'resolve_adb', return_value='/adb'), \
+                mock.patch.object(browser.subprocess, 'run', side_effect=KeyboardInterrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                self.close()
 
 
 if __name__ == '__main__':

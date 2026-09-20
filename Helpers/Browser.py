@@ -401,3 +401,35 @@ def launch_test_page(device_id: str, logger, *, site_file=DEFAULT_SITE_FILE) -> 
             UnicodeError, ValueError, TypeError) as error:
         logger.warning('Could not open DRM test page on %s: %s', device_id, error)
         return False
+
+
+def close_test_browser(device_id: str, logger) -> bool:
+    """Stop Chrome on the already-selected Android device during CLI exit.
+
+    This is deliberately independent of browser setup and Frida state.  The
+    caller already knows the selected serial, so no device discovery or retry
+    can accidentally target another phone while capture files are unwinding.
+    """
+    try:
+        if not isinstance(device_id, str) or not device_id:
+            raise ValueError('device ID must be a non-empty string')
+        adb = resolve_adb(None)
+        result = _adb_shell(
+            adb,
+            device_id,
+            shlex.join(('am', 'force-stop', CHROME_PACKAGE)),
+            'Stopping Chrome after capture',
+        )
+        _require_success(result, 'Stopping Chrome after capture')
+        logger.info('Closed Chrome on %s after capture.', device_id)
+        return True
+    except KeyboardInterrupt:
+        raise
+    except (BrowserSetupError, SetupError, OSError, subprocess.TimeoutExpired,
+            UnicodeError, ValueError, TypeError) as error:
+        logger.warning(
+            'Could not close Chrome on %s: %s. Capture files are retained; exiting continues.',
+            device_id,
+            error,
+        )
+        return False

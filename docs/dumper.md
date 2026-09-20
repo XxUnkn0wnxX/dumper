@@ -64,6 +64,9 @@ path is relative to the current directory unless it is absolute.
 The launcher requires an online ADB device whose serial exactly matches the
 selected Frida device ID, and an installed, enabled `com.android.chrome`. It
 applies the settings below, then restarts Chrome before opening the URL.
+It always runs `am force-stop com.android.chrome` before the new launch. This
+closes an already-open Chrome instance and also succeeds when Chrome is stopped.
+If that stop fails, the launcher warns and does not open another instance.
 
 | Setting | Purpose and effect |
 | --- | --- |
@@ -92,8 +95,10 @@ To keep browser setup and navigation entirely manual:
 python dump_keys.py --no-browser
 ```
 
-`--no-browser` leaves existing Chrome settings unchanged. To use a different
-active URL file:
+`--no-browser` skips only browser configuration and navigation; it does not
+disable exit cleanup. If a selected device is available, the dumper still
+attempts to stop Chrome, including Chrome opened manually by the user. To use
+a different active URL file:
 
 ```sh
 python dump_keys.py --site-file my_test_site.txt
@@ -143,6 +148,21 @@ debug-app selection or previous values of its managed flags. These steps do not
 clear Chrome browsing data or undo first-run choices already saved by Chrome.
 
 </details>
+
+## Chrome cleanup on exit
+
+After an Android device has been selected, the dumper attempts the bounded
+command `adb -s SELECTED_SERIAL shell am force-stop com.android.chrome` when it
+exits. The single ADB command has a five-second bound and runs on normal
+completion, Ctrl+C, Frida-server disconnect, ADB disconnect, and startup
+failure or cancellation after device selection. An unreachable device produces
+a best-effort warning and cannot be closed; cleanup continues. Help, argument
+parsing errors, and failures before a device is selected do not run this
+command.
+
+Stopping Chrome does not delete browsing data or saved key files and does not
+revert Chrome debug-app or command-line flags. This exit cleanup also runs with
+`--no-browser`; that option skips setup and navigation only.
 
 ## Capture cancellation and terminal state
 
@@ -238,7 +258,7 @@ to open the configured test page after hooks are ready.
 | `--device-id ID` | Select an Android Frida USB device explicitly. | Select the only available Android device. | `python dump_keys.py --device-id emulator-5554` |
 | `--function-name NAME` | Hook a specific private-key function export for the target build. | Scan lowercase function exports. | `python dump_keys.py --function-name zrtoooke` |
 | `--module-name NAME [NAME ...]` | Search one or more named Widevine libraries. | `libwvaidl.so libwvhidl.so` | `python dump_keys.py --module-name libwvhidl.so libwvaidl.so` |
-| `--no-browser` | Capture without configuring or opening Chrome through ADB. | Browser launch enabled. | `python dump_keys.py --no-browser` |
+| `--no-browser` | Skip browser configuration and navigation during startup. Exit cleanup still attempts the selected-device Chrome stop. | Browser launch enabled. | `python dump_keys.py --no-browser` |
 | `--site-file PATH` | Read the single active HTTPS test-page URL from a different text file. | Repository `drm_test_site.txt` | `python dump_keys.py --site-file my_test_site.txt` |
 | `--non-interactive` | Internal flag reserved for `full_auto.py`, which supplies it automatically. Requires `--cdm-version auto` and no `--function-name`. Omit it for manual runs. | Off | Set by `python full_auto.py` |
 

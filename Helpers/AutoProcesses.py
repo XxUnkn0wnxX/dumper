@@ -24,7 +24,9 @@ import io
 from Helpers.CLI import defer_interrupts, ignore_interrupts
 
 
-GRACE_SECONDS = 8.0
+# Allow bounded Frida detachment and the dumper's five-second Chrome stop to
+# finish before escalating shutdown, including when the ADB transport stalls.
+GRACE_SECONDS = 12.0
 ESCALATION_SECONDS = 2.0
 KILL_REAP_SECONDS = 0.25
 _ROLE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}\Z")

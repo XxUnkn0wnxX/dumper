@@ -42,6 +42,9 @@ capture children run together. Frida starts first, and the controller checks
 its owned process record and makes a fresh connection before launching the
 dumper.
 
+The dumper uses the same browser launcher as a manual run: it force-stops Chrome
+on the selected Android device before opening the test URL for a fresh launch.
+
 The two capture children run in the background with each child's raw stdout and
 stderr redirected to its fixed log. The original terminal shows controller
 progress, results, and log paths. It does not open new windows or tabs,
@@ -115,7 +118,9 @@ child output to settle, then attempts
 saved pair, and does not revert earlier Chrome debug-app or command-line flag
 changes. If the ADB stop fails, the controller warns and still cleans the
 owned child processes and Frida server, retaining the saved pair. Cancellation
-or an error before a completed pair does not close Chrome.
+or an error before a completed pair still runs the dumper child's own bounded
+five-second Chrome exit cleanup after that child has selected a device. Before
+the dumper is launched, the full-auto controller performs no Chrome closure.
 
 After that success cleanup, the controller closes only the child processes and
 Frida server it started before the parent exits. **Ctrl+C** follows the same
@@ -134,4 +139,4 @@ is mocked. The latest user logs plus independent file parsing and matching
 verified one successful complete pair and cleanup on Android 12 / API 31
 x86_64 with Frida 17.18.0 and CDM 16.1.0. That evidence applies to the tested
 target only and is not a blanket API or platform compatibility claim. The new
-post-success Chrome-stop step has not yet been device-tested.
+Chrome-stop cleanup paths have not yet been device-tested.

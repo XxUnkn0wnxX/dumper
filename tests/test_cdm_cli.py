@@ -186,16 +186,19 @@ class CdmCommandLineTests(unittest.TestCase):
         adb_patch = mock.patch.object(dump_keys, 'report_adb_version')
         frida_patch = mock.patch.object(dump_keys, 'report_frida_versions')
         browser_patch = mock.patch.object(dump_keys, 'launch_test_page', return_value=True)
+        browser_close_patch = mock.patch.object(dump_keys, 'close_test_browser', return_value=True)
         connection_patch = mock.patch.object(dump_keys, 'CaptureConnection')
         event_patch = mock.patch.object(dump_keys, 'emit_event')
         self.addCleanup(adb_patch.stop)
         self.addCleanup(frida_patch.stop)
         self.addCleanup(browser_patch.stop)
+        self.addCleanup(browser_close_patch.stop)
         self.addCleanup(connection_patch.stop)
         self.addCleanup(event_patch.stop)
         self.adb_report = adb_patch.start()
         self.frida_report = frida_patch.start()
         self.browser_launch = browser_patch.start()
+        self.browser_close = browser_close_patch.start()
         self.connection_class = connection_patch.start()
         self.emit_event = event_patch.start()
 
@@ -421,6 +424,7 @@ class CdmCommandLineTests(unittest.TestCase):
             self.assertEqual(dump_keys.run(), 0)
 
         self.assertTrue(any('Stopped by user.' in line for line in logs.output))
+        self.browser_close.assert_not_called()
 
     def test_imported_run_entry_repairs_terminal_before_startup(self):
         with mock.patch.object(dump_keys, 'prepare_terminal') as prepare, \
@@ -460,6 +464,7 @@ class CdmCommandLineTests(unittest.TestCase):
             self.assertEqual(dump_keys.run(), 0)
 
         self.assertTrue(any('Stopped by user.' in line for line in logs.output))
+        self.browser_close.assert_not_called()
 
     def test_run_handles_interrupt_during_process_enumeration(self):
         device = self.make_cli_device()
@@ -470,6 +475,7 @@ class CdmCommandLineTests(unittest.TestCase):
             self.assertEqual(dump_keys.run(), 0)
 
         device.close.assert_called_once_with()
+        self.browser_close.assert_called_once_with('android-1', logging.getLogger('main'))
         self.assertTrue(any('Stopped by user.' in line for line in logs.output))
 
     def test_run_handles_interrupt_during_hook_setup(self):
@@ -540,6 +546,7 @@ class CdmCommandLineTests(unittest.TestCase):
             signal.raise_signal(signal.SIGINT)
 
         self.connection_class.return_value.close.side_effect = interrupt_again
+        self.browser_close.side_effect = lambda *_args: interrupt_again()
         with mock.patch.object(dump_keys, 'main', return_value=device), \
                 mock.patch.object(dump_keys.time, 'sleep', side_effect=KeyboardInterrupt), \
                 self.assertLogs('main', level='INFO'):
@@ -547,6 +554,54 @@ class CdmCommandLineTests(unittest.TestCase):
 
         self.connection_class.return_value.close.assert_called_once_with()
         device.close.assert_called_once_with()
+        self.browser_close.assert_called_once_with('android-1', logging.getLogger('main'))
+
+    def test_capture_exit_closes_chrome_with_or_without_a_saved_pair(self):
+        for saved in (False, True):
+            for reason in ('interrupt', 'frida-stopped', 'capture-disconnected'):
+                with self.subTest(saved=saved, reason=reason):
+                    device = self.make_cli_device()
+                    device._pair_saved = saved
+                    self.browser_close.reset_mock()
+                    self.connection_class.reset_mock(return_value=True, side_effect=True)
+                    if reason == 'frida-stopped':
+                        self.connection_class.return_value.check.side_effect = dump_keys.frida.ServerNotRunningError('server stopped')
+                    elif reason == 'capture-disconnected':
+                        self.connection_class.return_value.check.side_effect = dump_keys.CAPTURE_DISCONNECT_ERRORS[0]('transport lost')
+                    with mock.patch.object(dump_keys, 'main', return_value=device), \
+                            mock.patch.object(dump_keys.time, 'sleep',
+                                              side_effect=KeyboardInterrupt if reason == 'interrupt' else None), \
+                            self.assertLogs('main', level='INFO'):
+                        self.assertEqual(dump_keys.run(), 0 if reason == 'interrupt' else 1)
+                    device.close.assert_called_once_with()
+                    self.browser_close.assert_called_once_with('android-1', logging.getLogger('main'))
+
+    def test_no_browser_skips_launch_but_still_closes_chrome_on_exit(self):
+        device = self.make_cli_device([SimpleNamespace(name='drm_process')], ['libwvhidl.so'])
+        with mock.patch.object(sys, 'argv', ['dump_keys.py', '--no-browser']), \
+                mock.patch.object(dump_keys, 'Device', return_value=device), \
+                mock.patch.object(dump_keys.time, 'sleep', side_effect=KeyboardInterrupt), \
+                self.assertLogs('main', level='INFO'):
+            self.assertEqual(dump_keys.run(), 0)
+        self.browser_launch.assert_not_called()
+        self.browser_close.assert_called_once_with('android-1', logging.getLogger('main'))
+
+    def test_browser_cleanup_failure_does_not_change_interrupt_exit_status(self):
+        device = self.make_cli_device()
+        self.browser_close.return_value = False
+        with mock.patch.object(dump_keys, 'main', return_value=device), \
+                mock.patch.object(dump_keys.time, 'sleep', side_effect=KeyboardInterrupt), \
+                self.assertLogs('main', level='INFO'):
+            self.assertEqual(dump_keys.run(), 0)
+        device.close.assert_called_once_with()
+        self.browser_close.assert_called_once()
+
+    def test_browser_cleanup_still_runs_if_device_cleanup_raises(self):
+        device = self.make_cli_device()
+        device.close.side_effect = RuntimeError('cleanup fixture')
+        with self.assertRaisesRegex(RuntimeError, 'cleanup fixture'):
+            dump_keys._close_device_and_browser(device)
+        self.browser_close.assert_called_once_with('android-1', logging.getLogger('main'))
 
     def test_run_checks_capture_progress_while_waiting(self):
         device = mock.Mock()

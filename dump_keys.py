@@ -30,7 +30,7 @@ if __name__ == '__main__':
             print('\nStopped by user.', file=sys.stderr)
         raise SystemExit(0)
 
-from Helpers.Browser import DEFAULT_SITE_FILE, launch_test_page
+from Helpers.Browser import DEFAULT_SITE_FILE, close_test_browser, launch_test_page
 
 # Keep --help usable even when the venv is missing required packages. Only
 # dependency import failures are deferred; broken project imports still surface.
@@ -82,6 +82,20 @@ logging.basicConfig(
 )
 
 # ------------------------------------------------------------------------------
+# EXIT CLEANUP
+# Release capture hooks, then stop Chrome through ADB on the same Android serial.
+# Browser cleanup does not depend on Frida still being alive or a pair being saved.
+# Callers suppress repeated interrupts while this bounded cleanup completes.
+# ------------------------------------------------------------------------------
+def _close_device_and_browser(device):
+    device_id = device.usb_device.id
+    try:
+        device.close()
+    finally:
+        close_test_browser(device_id, logging.getLogger('main'))
+
+
+# ------------------------------------------------------------------------------
 # STARTUP - argument parsing completes before any device interaction.
 # main() returns the device after hook setup; run() monitors capture progress.
 # ------------------------------------------------------------------------------
@@ -103,7 +117,7 @@ def main():
     )
     parser.add_argument(
         '--no-browser', action='store_true',
-        help='Keep capturing without configuring or opening Chrome through ADB.',
+        help='Skip Chrome setup/navigation; Chrome still closes on capture exit.',
     )
     parser.add_argument(
         '--site-file', default=DEFAULT_SITE_FILE, metavar='PATH',
@@ -200,7 +214,7 @@ def main():
             # cancelled discovery, hook, or browser setup. Real cleanup errors
             # still propagate through this context.
             with ignore_interrupts():
-                device.close()
+                _close_device_and_browser(device)
 
 
 # ------------------------------------------------------------------------------
@@ -268,7 +282,7 @@ def run():
                     connection.close()
             finally:
                 if device is not None:
-                    device.close()
+                    _close_device_and_browser(device)
 
 
 if __name__ == '__main__':

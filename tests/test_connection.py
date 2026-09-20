@@ -229,6 +229,11 @@ class DeviceCleanupTests(unittest.TestCase):
 
 
 class DumperRunIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        browser_patch = mock.patch.object(dump_keys, 'close_test_browser', return_value=True)
+        self.addCleanup(browser_patch.stop)
+        self.browser_close = browser_patch.start()
+
     @staticmethod
     def run_device():
         device_source = SignalSource()
@@ -268,6 +273,8 @@ class DumperRunIntegrationTests(unittest.TestCase):
                 for line in logs.output
             ))
             device.close.assert_called_once_with()
+            self.browser_close.assert_called_once()
+            self.assertEqual(self.browser_close.call_args.args[0], 'emulator-5554')
             self.assertEqual(saved_file.read_bytes(), b'client id')
             self.assertEqual(device_source.listeners, {})
             self.assertEqual(session.listeners, {})
@@ -278,6 +285,20 @@ class DumperRunIntegrationTests(unittest.TestCase):
                 mock.patch.object(dump_keys.time, 'sleep', side_effect=KeyboardInterrupt):
             self.assertEqual(dump_keys.run(), 0)
         device.close.assert_called_once_with()
+        self.assertEqual(device_source.listeners, {})
+        self.assertEqual(session.listeners, {})
+
+    def test_frida_session_disconnect_closes_chrome_while_device_remains_connected(self):
+        device, device_source, session = self.run_device()
+        with mock.patch.object(dump_keys, 'main', return_value=device), \
+                mock.patch.object(dump_keys.time, 'sleep',
+                                  side_effect=lambda _: session.emit('detached', 'connection-terminated', None)), \
+                self.assertLogs('main', level='WARNING'):
+            self.assertEqual(dump_keys.run(), 1)
+        self.assertFalse(device_source.is_lost)
+        device.close.assert_called_once_with()
+        self.browser_close.assert_called_once()
+        self.assertEqual(self.browser_close.call_args.args[0], 'emulator-5554')
         self.assertEqual(device_source.listeners, {})
         self.assertEqual(session.listeners, {})
 

@@ -342,6 +342,45 @@ class FullAutoTests(unittest.TestCase):
         self.assertFalse(controller.directory.exists())
         self.assertTrue(controller.log_directory.is_dir())
 
+    def test_runtime_frida_or_adb_loss_stops_both_children_and_retains_saved_files(self):
+        for failure in ('frida-stopped', 'adb-offline'):
+            with self.subTest(failure=failure):
+                controller = self.make_controller()
+                controller.launch = {
+                    'device_id': 'pixel', 'root_mode': 'direct',
+                    'marker': full_auto.marker_path(controller.token),
+                }
+                existing = self.pair_event(name=failure)
+                existing_folder = self.root / existing['path']
+
+                def start_process(role, _arguments):
+                    controller.processes[role] = FakeProcess()
+                    if role == 'dumper':
+                        failed_role = 'frida' if failure == 'frida-stopped' else 'dumper'
+                        controller.processes[failed_role].status = 1
+
+                stderr = io.StringIO()
+                with mock.patch.object(controller, 'start_process', side_effect=start_process), \
+                        mock.patch.object(controller, 'wait_for_frida'), \
+                        mock.patch.object(controller, 'close_chrome') as chrome, \
+                        mock.patch.object(full_auto.setup_frida, 'run_root',
+                                          return_value=subprocess.CompletedProcess([], 0),
+                                          side_effect=setup_frida.SetupError('device offline')
+                                          if failure == 'adb-offline' else None), \
+                        redirect_stderr(stderr), \
+                        self.assertRaisesRegex(full_auto.AutoError, 'stopped before capture completed'):
+                    controller.run()
+
+                self.assertEqual(set(controller.processes), {'frida', 'dumper'})
+                self.assertTrue(all(process.close_calls == 1 for process in controller.processes.values()))
+                self.assertEqual((existing_folder / 'client_id.bin').read_bytes(), b'client-id')
+                self.assertEqual((existing_folder / 'private_key.pem').read_bytes(), b'private-key')
+                chrome.assert_not_called()  # The child owns Chrome cleanup on failure.
+                self.assertTrue(controller.log_directory.is_dir())
+                self.assertEqual(controller.directory.exists(), failure == 'adb-offline')
+                if failure == 'adb-offline':
+                    self.assertIn('cleanup could not be fully confirmed', stderr.getvalue())
+
     def test_run_signature_failure_cleans_owned_setup_process(self):
         controller = self.make_controller(timeout=1)
         frida = FakeProcess()
