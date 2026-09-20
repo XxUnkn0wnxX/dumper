@@ -4,14 +4,38 @@
 > **Experimental branch — active rework**
 >
 > This branch is experimental and is currently being reworked. Features and
-> behavior may change. Capture testing is user-confirmed on Android 9–13 /
-> API 28–33 (2026-09-20); see the [testing guide](docs/testing.md) for exact
-> evidence and remaining limits.
+> behavior may change. See [Android compatibility](#android-compatibility)
+> below for the tested versions and remaining limits.
 
 A Python and Frida tool for capturing Widevine L3 client IDs and matching private
 keys from rooted Android devices. This fork includes Android device selection,
 automatic request-layout detection, browser test-page setup, and maintainer
 tools.
+
+## Android compatibility
+
+Capture testing was user-confirmed on **Android 9–13 / API 28–33** on
+2026-09-20, using the tested emulator images.
+
+| Android version | API level | Capture testing | Full auto |
+| --- | --- | --- | --- |
+| Android 9 | 28 | ✅ User-confirmed | Allowed by the version check |
+| Android 10 | 29 | ✅ User-confirmed | Allowed by the version check |
+| Android 11 | 30 | ✅ User-confirmed | Allowed by the version check |
+| Android 12 | 31 | ✅ User-confirmed | Allowed by the version check |
+| Android 12L | 32 | ✅ User-confirmed | Allowed by the version check |
+| Android 13 | 33 | ✅ User-confirmed | Allowed by the version check |
+| Android 14 and newer | 34+ | 🧪 Unverified; Android 14–17 work is planned | Outside the allowed range |
+| Earlier Android versions | Below 28 | Unverified by this fork | Outside the allowed range |
+
+Full auto enforces **API 28–33** and also requires a recognized Widevine
+signature. All capture requires root access; the Android version alone does
+not establish compatibility with every device or library build. Prefer
+**Google APIs** emulator images; see [Android setup](docs/android-setup.md#choose-an-emulator-image).
+
+See [testing and verified scope](docs/testing.md#verified-scope) for the evidence,
+[full-auto usage](docs/full-auto.md) for its checks, and
+[planned SDK work](docs/TODO.md) for newer Android versions.
 
 ## Documentation
 
